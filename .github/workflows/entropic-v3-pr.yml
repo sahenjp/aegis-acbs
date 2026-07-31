@@ -7,7 +7,43 @@ permissions:
   contents: read
 
 jobs:
+  prepare-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Install Osmium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osmium-tool
+      - name: Download and validate extracts
+        run: |
+          set -euo pipefail
+          mkdir -p extracts
+          download() {
+            local name=$1
+            local url=$2
+            local tmp="extracts/$name.osm.pbf.part"
+            local dst="extracts/$name.osm.pbf"
+            rm -f "$tmp" "$dst"
+            curl -fL --retry 6 --retry-all-errors --retry-delay 2 \
+              --connect-timeout 20 "$url" -o "$tmp"
+            osmium fileinfo "$tmp" >/dev/null
+            mv "$tmp" "$dst"
+          }
+          download monaco https://download.geofabrik.de/europe/monaco-latest.osm.pbf
+          download andorra https://download.geofabrik.de/europe/andorra-latest.osm.pbf
+          download liechtenstein https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf
+          download luxembourg https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf
+          download bremen https://download.geofabrik.de/europe/germany/bremen-latest.osm.pbf
+      - uses: actions/upload-artifact@v6
+        with:
+          name: entropic-v3-extracts
+          path: extracts
+          if-no-files-found: error
+          retention-days: 3
+
   evaluate:
+    needs: prepare-data
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +76,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends osmium-tool
+      - uses: actions/download-artifact@v6
+        with:
+          name: entropic-v3-extracts
+          path: extracts
+      - name: Convert extracts
+        run: |
+          set -euo pipefail
+          for region in monaco andorra liechtenstein luxembourg bremen; do
+            osmium cat "extracts/$region.osm.pbf" \
+              -o "$RUNNER_TEMP/$region.osm" --overwrite
+          done
       - name: Materialize candidate
         run: |
           python3 scripts/entropic_v3_experiment.py \
@@ -50,15 +97,6 @@ jobs:
           go test ./internal/search
           go vet ./internal/search
           go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
-      - name: Download regional extracts
-        run: |
-          set -euo pipefail
-          for region in monaco andorra liechtenstein luxembourg bremen; do
-            curl -fsSL --retry 3 "https://download.geofabrik.de/europe/$region-latest.osm.pbf" \
-              -o "$RUNNER_TEMP/$region.osm.pbf"
-            osmium cat "$RUNNER_TEMP/$region.osm.pbf" \
-              -o "$RUNNER_TEMP/$region.osm" --overwrite
-          done
       - name: Benchmark deterministic work
         run: |
           set -euo pipefail
