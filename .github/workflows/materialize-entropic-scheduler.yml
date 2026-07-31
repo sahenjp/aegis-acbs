@@ -1,26 +1,38 @@
 name: Materialize entropic scheduler candidate
 
 on:
-  push:
+  pull_request:
     branches:
-      - feat/entropic-proof-rate-scheduler
+      - main
 
 permissions:
   contents: write
 
 jobs:
   materialize:
-    if: ${{ !contains(github.event.head_commit.message, 'feat(search): add entropic proof-rate scheduler candidate') }}
+    if: github.head_ref == 'feat/entropic-proof-rate-scheduler'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - id: state
+        name: Detect existing source
+        shell: bash
+        run: |
+          if [[ -f internal/search/acbs_entropic_scheduler.go ]]; then
+            echo 'materialized=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'materialized=false' >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.state.outputs.materialized == 'false'
+        uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
           cache: true
-      - name: Apply validated candidate
+      - if: steps.state.outputs.materialized == 'false'
+        name: Apply validated candidate
         shell: bash
         run: |
           cat .github/bootstrap/payload/* > /tmp/apply-entropic.py.gz.b64
@@ -35,7 +47,8 @@ jobs:
             internal/search/acbs_entropic_scheduler.go \
             internal/search/acbs_entropic_scheduler_test.go
           chmod +x scripts/benchmark-entropic.sh
-      - name: Validate
+      - if: steps.state.outputs.materialized == 'false'
+        name: Validate
         shell: bash
         run: |
           git diff --check
@@ -44,7 +57,8 @@ jobs:
           go vet ./...
           go test -race ./internal/search ./internal/graph ./internal/bench ./internal/server
           go build ./cmd/aegis
-      - name: Commit source
+      - if: steps.state.outputs.materialized == 'false'
+        name: Commit source
         shell: bash
         run: |
           git config user.name 'github-actions[bot]'
