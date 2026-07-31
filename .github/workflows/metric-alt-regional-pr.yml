@@ -1,0 +1,75 @@
+name: Metric ALT regional evaluation
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Install Osmium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osmium-tool
+      - name: Build
+        run: go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Download extracts
+        run: |
+          set -euo pipefail
+          download() {
+            local name=$1
+            local url=$2
+            local pbf="$RUNNER_TEMP/$name.osm.pbf"
+            curl -fL --retry 6 --retry-all-errors --retry-delay 2 "$url" -o "$pbf"
+            osmium fileinfo "$pbf" >/dev/null
+            osmium cat "$pbf" -o "$RUNNER_TEMP/$name.osm" --overwrite
+          }
+          download monaco https://download.geofabrik.de/europe/monaco-latest.osm.pbf
+          download andorra https://download.geofabrik.de/europe/andorra-latest.osm.pbf
+          download liechtenstein https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf
+          download bremen https://download.geofabrik.de/europe/germany/bremen-latest.osm.pbf
+          download luxembourg https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf
+      - name: Benchmark
+        run: |
+          set -euo pipefail
+          out=artifacts/metric-alt-regional
+          mkdir -p "$out"
+          for region in monaco andorra liechtenstein bremen luxembourg; do
+            for metric in distance time; do
+              graph="$RUNNER_TEMP/$region-$metric.aegis"
+              "$RUNNER_TEMP/aegis" import-osm \
+                --input "$RUNNER_TEMP/$region.osm" \
+                --output "$graph" \
+                --profile car \
+                --metric "$metric"
+              for seed in 1010 424242 20260717; do
+                run_dir="$out/$region-$metric/seed-$seed"
+                mkdir -p "$run_dir"
+                "$RUNNER_TEMP/aegis" benchmark \
+                  --graph "$graph" \
+                  --queries 500 \
+                  --repeats 1 \
+                  --order interleaved \
+                  --suite mixed \
+                  --seed "$seed" \
+                  --algorithms aegis,aegis-alt \
+                  --output "$run_dir/report.json" \
+                  --html "" \
+                  2> >(tee "$run_dir/preprocess.log" >&2)
+              done
+            done
+          done
+      - uses: actions/upload-artifact@v6
+        with:
+          name: metric-alt-regional-reports
+          path: artifacts/metric-alt-regional
+          if-no-files-found: error
