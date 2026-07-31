@@ -2,11 +2,9 @@ name: Metric ALT candidate validation
 
 on:
   pull_request:
-  push:
-    branches: [feat/metric-alt-potential]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
@@ -14,13 +12,16 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: feat/metric-alt-potential
       - uses: actions/setup-go@v6
         with:
           go-version: '1.23.x'
           cache: true
-      - name: Align materializer with repository source
+      - name: Materialize sources
         run: |
-          python3 - <<'PY'
+          if [[ ! -f internal/search/metric_alt.go ]]; then
+            python3 - <<'PY'
           from pathlib import Path
           path = Path("scripts/materialize_metric_alt.py")
           text = path.read_text()
@@ -30,10 +31,8 @@ jobs:
               raise SystemExit(f"expected two resolve signature literals, found {text.count(old)}")
           path.write_text(text.replace(old, new))
           PY
-      - name: Materialize sources
-        run: |
-          python3 scripts/materialize_metric_alt.py
-          python3 - <<'PY'
+            python3 scripts/materialize_metric_alt.py
+            python3 - <<'PY'
           from pathlib import Path
           path = Path("internal/search/metric_alt_test.go")
           text = path.read_text()
@@ -43,6 +42,7 @@ jobs:
               raise SystemExit(f"expected one indexed fixture, found {text.count(old)}")
           path.write_text(text.replace(old, new))
           PY
+          fi
           gofmt -w cmd/aegis/main.go internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go
       - name: Validate
         run: |
@@ -66,16 +66,17 @@ jobs:
             --algorithms aegis,aegis-alt \
             --output "$RUNNER_TEMP/report.json" \
             --html ""
-      - name: Collect candidate
+      - name: Commit validated sources
         run: |
-          mkdir -p candidate/cmd/aegis candidate/internal/search
-          cp cmd/aegis/main.go candidate/cmd/aegis/main.go
-          cp internal/search/acbs.go candidate/internal/search/acbs.go
-          cp internal/search/search.go candidate/internal/search/search.go
-          cp internal/search/metric_alt.go candidate/internal/search/metric_alt.go
-          cp internal/search/metric_alt_test.go candidate/internal/search/metric_alt_test.go
-      - uses: actions/upload-artifact@v6
-        with:
-          name: metric-alt-candidate
-          path: candidate
-          if-no-files-found: error
+          git add cmd/aegis/main.go \
+            internal/search/acbs.go \
+            internal/search/search.go \
+            internal/search/metric_alt.go \
+            internal/search/metric_alt_test.go
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "feat(search): add metric ALT potential candidate"
+          git push origin HEAD:feat/metric-alt-potential
