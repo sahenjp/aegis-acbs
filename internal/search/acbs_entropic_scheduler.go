@@ -18,28 +18,50 @@ const (
 )
 
 type acbsProofRate struct {
-	logMean float64
-	samples uint64
+	logMean   float64
+	firstGain uint64
+	firstWork uint64
+	samples   uint64
 }
 
 func (r acbsProofRate) rate() float64 {
-	if r.samples == 0 {
+	switch r.samples {
+	case 0:
 		return 0
+	case 1:
+		return acbsSmoothedRate(r.firstGain, r.firstWork)
+	default:
+		return math.Exp(r.logMean)
 	}
-	return math.Exp(r.logMean)
+}
+
+func (r acbsProofRate) logRate() float64 {
+	if r.samples == 1 {
+		return acbsLogSmoothedRate(r.firstGain, r.firstWork)
+	}
+	return r.logMean
 }
 
 func (r acbsProofRate) sampled() bool { return r.samples != 0 }
 
 func (r *acbsProofRate) update(gain, work uint64) {
+	// Most local road queries terminate after the first chunk. Preserve that
+	// fast path by storing the first sufficient statistic without evaluating
+	// logarithms. The log-domain estimator is materialized only if another
+	// scheduling decision can actually use it.
+	if r.samples == 0 {
+		r.firstGain = gain
+		r.firstWork = work
+		r.samples = 1
+		return
+	}
+
 	// Laplace smoothing keeps zero-progress chunks finite. Estimating in log
 	// space makes multiplicative changes natural, while clipping limits one
 	// observation to a factor of 4^(1/4) in the stored rate.
-	observation := math.Log((float64(gain) + 1.0) / (float64(work) + 1.0))
-	if r.samples == 0 {
-		r.logMean = observation
-		r.samples = 1
-		return
+	observation := acbsLogSmoothedRate(gain, work)
+	if r.samples == 1 {
+		r.logMean = acbsLogSmoothedRate(r.firstGain, r.firstWork)
 	}
 	delta := observation - r.logMean
 	if delta > acbsProofRateClipLog {
@@ -84,8 +106,8 @@ func (s *acbsEntropicScheduler) choose(frontF, frontB item, last byte, hasUpperB
 	}
 	pressureF := acbsNormalizedPriorityPressure(frontF.priority, frontB.priority)
 
-	uF := s.forward.logMean + exploreF + priorityWeight*pressureF
-	uB := s.backward.logMean + exploreB - priorityWeight*pressureF
+	uF := s.forward.logRate() + exploreF + priorityWeight*pressureF
+	uB := s.backward.logRate() + exploreB - priorityWeight*pressureF
 	if last == 'F' {
 		uB -= acbsSwitchPenalty
 	} else if last == 'B' {
@@ -121,6 +143,14 @@ func (s *acbsEntropicScheduler) observe(direction byte, gain, work uint64) {
 		return
 	}
 	s.backward.update(gain, work)
+}
+
+func acbsSmoothedRate(gain, work uint64) float64 {
+	return (float64(gain) + 1.0) / (float64(work) + 1.0)
+}
+
+func acbsLogSmoothedRate(gain, work uint64) float64 {
+	return math.Log(acbsSmoothedRate(gain, work))
 }
 
 func acbsNormalizedPriorityPressure(forward, backward uint64) float64 {
