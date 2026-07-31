@@ -1,0 +1,139 @@
+name: Entropic scheduler parameter sweep
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: current
+            minimum_share: '0.125'
+            temperature: '0.80'
+            switch_penalty: '0.08'
+            priority_before: '1.60'
+            priority_after: '0.80'
+            budget_power: '2'
+          - name: inertia
+            minimum_share: '0.125'
+            temperature: '0.80'
+            switch_penalty: '0.75'
+            priority_before: '1.60'
+            priority_after: '0.80'
+            budget_power: '2'
+          - name: decisive
+            minimum_share: '0.0625'
+            temperature: '0.35'
+            switch_penalty: '0.35'
+            priority_before: '1.60'
+            priority_after: '0.80'
+            budget_power: '2'
+          - name: proximal
+            minimum_share: '0.0625'
+            temperature: '0.50'
+            switch_penalty: '0.75'
+            priority_before: '1.00'
+            priority_after: '0.50'
+            budget_power: '2'
+          - name: linear-budget
+            minimum_share: '0.0625'
+            temperature: '0.50'
+            switch_penalty: '0.75'
+            priority_before: '1.00'
+            priority_after: '0.50'
+            budget_power: '1'
+          - name: low-pressure
+            minimum_share: '0.0625'
+            temperature: '0.45'
+            switch_penalty: '0.60'
+            priority_before: '0.60'
+            priority_after: '0.30'
+            budget_power: '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Install Osmium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osmium-tool
+      - name: Materialize variant
+        env:
+          MINIMUM_SHARE: ${{ matrix.minimum_share }}
+          TEMPERATURE: ${{ matrix.temperature }}
+          SWITCH_PENALTY: ${{ matrix.switch_penalty }}
+          PRIORITY_BEFORE: ${{ matrix.priority_before }}
+          PRIORITY_AFTER: ${{ matrix.priority_after }}
+          BUDGET_POWER: ${{ matrix.budget_power }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path('internal/search/acbs_entropic_scheduler.go')
+          source = path.read_text()
+          replacements = {
+              'acbsMinimumDirectionShare = 1.0 / 8.0': f"acbsMinimumDirectionShare = {os.environ['MINIMUM_SHARE']}",
+              'acbsPriorityWeightBefore = 1.60': f"acbsPriorityWeightBefore = {os.environ['PRIORITY_BEFORE']}",
+              'acbsPriorityWeightAfter  = 0.80': f"acbsPriorityWeightAfter  = {os.environ['PRIORITY_AFTER']}",
+              'acbsSwitchPenalty        = 0.08': f"acbsSwitchPenalty        = {os.environ['SWITCH_PENALTY']}",
+              'acbsMirrorTemperature    = 0.80': f"acbsMirrorTemperature    = {os.environ['TEMPERATURE']}",
+          }
+          for old, new in replacements.items():
+              if old not in source:
+                  raise SystemExit(f'missing replacement target: {old}')
+              source = source.replace(old, new, 1)
+          if os.environ['BUDGET_POWER'] == '1':
+              old = '1.0 + 3.0*certainty*certainty'
+              if old not in source:
+                  raise SystemExit(f'missing replacement target: {old}')
+              source = source.replace(old, '1.0 + 3.0*certainty', 1)
+          path.write_text(source)
+          PY
+          gofmt -w internal/search/acbs_entropic_scheduler.go
+          go test ./internal/search
+          go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Download and convert extracts
+        run: |
+          curl -fsSL --retry 3 https://download.geofabrik.de/europe/andorra-latest.osm.pbf -o "$RUNNER_TEMP/andorra.osm.pbf"
+          curl -fsSL --retry 3 https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf -o "$RUNNER_TEMP/liechtenstein.osm.pbf"
+          osmium cat "$RUNNER_TEMP/andorra.osm.pbf" -o "$RUNNER_TEMP/andorra.osm" --overwrite
+          osmium cat "$RUNNER_TEMP/liechtenstein.osm.pbf" -o "$RUNNER_TEMP/liechtenstein.osm" --overwrite
+      - name: Import and evaluate deterministic work
+        run: |
+          set -euo pipefail
+          mkdir -p "artifacts/${{ matrix.name }}"
+          for region in andorra liechtenstein; do
+            for metric in distance time; do
+              graph="$RUNNER_TEMP/$region-$metric.aegis"
+              "$RUNNER_TEMP/aegis" import-osm \
+                --input "$RUNNER_TEMP/$region.osm" \
+                --output "$graph" \
+                --profile car \
+                --metric "$metric"
+              "$RUNNER_TEMP/aegis" benchmark \
+                --graph "$graph" \
+                --queries 1000 \
+                --repeats 1 \
+                --order interleaved \
+                --suite mixed \
+                --seed 1010 \
+                --algorithms aegis,aegis-entropic \
+                --output "artifacts/${{ matrix.name }}/$region-$metric.json"
+            done
+          done
+      - name: Upload reports
+        uses: actions/upload-artifact@v6
+        with:
+          name: entropic-sweep-${{ matrix.name }}
+          path: artifacts/${{ matrix.name }}
+          if-no-files-found: error
