@@ -8,16 +8,17 @@ import (
 )
 
 const (
-	acbsSchedulerVersion        = "edge-efficiency-v3"
-	acbsChordPotentialModel     = "balanced-chord-v3"
-	acbsProjectionModel         = "balanced-projection-v1"
-	acbsLateGuardScheduler      = "edge-efficiency-v3-late-upper-bound-guard-v1"
-	acbsConnect32Scheduler      = "edge-efficiency-v3-connection-guard-32-until-upper-v1"
-	acbsConnect40Scheduler      = "edge-efficiency-v3-connection-guard-40-until-upper-v1"
-	acbsConnect32x16Scheduler   = "edge-efficiency-v3-connection-guard-32x16-v1"
-	acbsLateGuardStartChunk     = uint64(48)
-	acbsLateGuardWindow         = 8
-	acbsConnectionGuardWindow16 = 16
+	acbsSchedulerVersion         = "edge-efficiency-v3"
+	acbsEntropicSchedulerVersion = "entropic-proof-rate-v1"
+	acbsChordPotentialModel      = "balanced-chord-v3"
+	acbsProjectionModel          = "balanced-projection-v1"
+	acbsLateGuardScheduler       = "edge-efficiency-v3-late-upper-bound-guard-v1"
+	acbsConnect32Scheduler       = "edge-efficiency-v3-connection-guard-32-until-upper-v1"
+	acbsConnect40Scheduler       = "edge-efficiency-v3-connection-guard-40-until-upper-v1"
+	acbsConnect32x16Scheduler    = "edge-efficiency-v3-connection-guard-32x16-v1"
+	acbsLateGuardStartChunk      = uint64(48)
+	acbsLateGuardWindow          = 8
+	acbsConnectionGuardWindow16  = 16
 )
 
 type acbsGuardMode uint8
@@ -33,6 +34,7 @@ const (
 type acbsOptions struct {
 	algorithm  Algorithm
 	adaptive   bool
+	entropic   bool
 	pruning    bool
 	projection bool
 	guardMode  acbsGuardMode
@@ -44,6 +46,17 @@ func acbs(ctx context.Context, g *graph.Graph, source, target int) (Result, erro
 	// path therefore keeps the exact coupled-bound termination rule but does
 	// not run the optional per-node incumbent pruning experiment.
 	return acbsWithOptions(ctx, g, source, target, acbsOptions{algorithm: Aegis, adaptive: true, pruning: false})
+}
+
+func acbsEntropic(ctx context.Context, g *graph.Graph, source, target int) (Result, error) {
+	// Experimental scheduler candidate. It shares the production potential,
+	// labels, incumbent, coupled lower bound, and exact stopping condition.
+	return acbsWithOptions(ctx, g, source, target, acbsOptions{
+		algorithm: AegisEntropic,
+		adaptive:  true,
+		entropic:  true,
+		pruning:   false,
+	})
 }
 
 func acbsLateGuard(ctx context.Context, g *graph.Graph, source, target int) (Result, error) {
@@ -142,6 +155,7 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 	guardTriggered := false
 	var scoreF, scoreB uint64
 	var sampledF, sampledB bool
+	var entropicScheduler acbsEntropicScheduler
 	lastDirection := byte(0)
 	consecutive := 0
 	terminatedByBound := false
@@ -187,9 +201,13 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 		}
 		connectionGuardActive := guardActive && bestReduced == inf
 
+		decision := acbsScheduleDecision{}
 		direction := byte(0)
 		if connectionGuardActive {
 			direction = chooseACBSStaticDirection(g, frontF, frontB, qf.Len(), qb.Len())
+		} else if opts.entropic {
+			decision = entropicScheduler.choose(frontF, frontB, lastDirection, bestReduced != inf)
+			direction = decision.direction
 		} else if opts.adaptive {
 			direction = chooseACBSDirection(
 				g, frontF, frontB, qf.Len(), qb.Len(), scoreF, scoreB,
@@ -209,6 +227,9 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 		}
 
 		budget := acbsEdgeBudget(g.EdgeCount, scoreF, scoreB, direction, bestReduced != inf)
+		if opts.entropic {
+			budget = acbsEntropicEdgeBudget(g.EdgeCount, decision.certainty, bestReduced != inf)
+		}
 		if !opts.adaptive || connectionGuardActive {
 			budget = acbsBaseEdgeBudget(g.EdgeCount)
 		}
@@ -228,7 +249,13 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 		beforePotentialEvaluations := stats.PotentialEvaluations
 		beforeQueues := qf.Len() + qb.Len()
 		beforeQF, beforeQB := qf.Len(), qb.Len()
-		beforeScoreF, beforeScoreB := scoreF, scoreB
+		beforePriorityF, beforePriorityB := frontF.priority, frontB.priority
+		beforeScoreF := float64(scoreF) / 1_000_000.0
+		beforeScoreB := float64(scoreB) / 1_000_000.0
+		if opts.entropic {
+			beforeScoreF = entropicScheduler.forward.rate()
+			beforeScoreB = entropicScheduler.backward.rate()
+		}
 		beforeBest := best
 		stats.Chunks++
 
@@ -383,7 +410,28 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 			stats.Expanded-beforeExpanded,
 			qf.Len()+qb.Len()-beforeQueues,
 		)
-		if opts.adaptive {
+		if opts.entropic {
+			afterPriorityF, afterPriorityB := beforePriorityF, beforePriorityB
+			if okF {
+				afterPriorityF = frontF.priority
+			}
+			if okB {
+				afterPriorityB = frontB.priority
+			}
+			directionalGain := acbsDirectionalGain(
+				direction, beforePriorityF, afterPriorityF, beforePriorityB, afterPriorityB,
+			)
+			queueGrowth := qf.Len() - beforeQF
+			if direction == 'B' {
+				queueGrowth = qb.Len() - beforeQB
+			}
+			work = schedulerWork(
+				stats.Relaxed-beforeRelaxed,
+				stats.Expanded-beforeExpanded,
+				queueGrowth,
+			)
+			entropicScheduler.observe(direction, directionalGain, work)
+		} else if opts.adaptive {
 			instant := efficiencyScore(gain, work)
 			if direction == 'F' {
 				scoreF = emaScore(scoreF, instant, sampledF)
@@ -392,6 +440,12 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 				scoreB = emaScore(scoreB, instant, sampledB)
 				sampledB = true
 			}
+		}
+		afterScoreF := float64(scoreF) / 1_000_000.0
+		afterScoreB := float64(scoreB) / 1_000_000.0
+		if opts.entropic {
+			afterScoreF = entropicScheduler.forward.rate()
+			afterScoreB = entropicScheduler.backward.rate()
 		}
 		if trace != nil {
 			event := ACBSTraceEvent{
@@ -403,10 +457,10 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 				PotentialEvaluationsDelta: stats.PotentialEvaluations - beforePotentialEvaluations,
 				ForwardQueueBefore:        beforeQF, BackwardQueueBefore: beforeQB,
 				ForwardQueueAfter: qf.Len(), BackwardQueueAfter: qb.Len(),
-				ForwardScoreBefore:     float64(beforeScoreF) / 1_000_000.0,
-				BackwardScoreBefore:    float64(beforeScoreB) / 1_000_000.0,
-				ForwardScoreAfter:      float64(scoreF) / 1_000_000.0,
-				BackwardScoreAfter:     float64(scoreB) / 1_000_000.0,
+				ForwardScoreBefore:     beforeScoreF,
+				BackwardScoreBefore:    beforeScoreB,
+				ForwardScoreAfter:      afterScoreF,
+				BackwardScoreAfter:     afterScoreB,
 				DirectionSwitchesTotal: stats.DirectionSwitches, ForwardExpandedTotal: stats.ForwardExpanded, BackwardExpandedTotal: stats.BackwardExpanded,
 				HadUpperBoundBefore: beforeBest != inf, HadUpperBoundAfter: best != inf,
 				LateGuardActive:       opts.guardMode == acbsGuardLate48x8 && connectionGuardActive,
@@ -442,6 +496,10 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 
 	stats.ForwardEfficiency = float64(scoreF) / 1_000_000.0
 	stats.BackwardEfficiency = float64(scoreB) / 1_000_000.0
+	if opts.entropic {
+		stats.ForwardEfficiency = entropicScheduler.forward.rate()
+		stats.BackwardEfficiency = entropicScheduler.backward.rate()
+	}
 	if best == inf || meet < 0 {
 		return Result{Stats: stats}, nil
 	}
@@ -622,6 +680,9 @@ func schedulerName(opts acbsOptions) string {
 	}
 	if !opts.adaptive {
 		return "lower-key-static-v2"
+	}
+	if opts.entropic {
+		return acbsEntropicSchedulerVersion
 	}
 	if opts.pruning {
 		return acbsSchedulerVersion + "-incumbent-prune"

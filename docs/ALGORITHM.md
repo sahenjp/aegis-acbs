@@ -179,7 +179,8 @@ priority queueには、非減少の整数keyを扱うmonotone radix heapを使�
 
 | 名前 | 目的 | 通常比較 |
 |---|---|---:|
-| `aegis` | balanced chord potential＋適応scheduler | ✓ |
+| `aegis` | balanced chord potential＋production適応scheduler | ✓ |
+| `aegis-entropic` | エントロピー正則化付き証明進行率scheduler | 明示指定 |
 | `aegis-static` | 同じ停止証明で方向schedulerを固定 | ✓ |
 | `aegis-prune` | incumbent-bound pruningの実験 | 明示指定 |
 | `aegis-projection` | 線形projection potentialの実験 | 明示指定 |

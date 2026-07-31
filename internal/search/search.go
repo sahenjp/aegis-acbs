@@ -17,6 +17,7 @@ const (
 	BiDijkstra        Algorithm = "bidijkstra"
 	AStar             Algorithm = "astar"
 	Aegis             Algorithm = "aegis"
+	AegisEntropic     Algorithm = "aegis-entropic"
 	AegisStatic       Algorithm = "aegis-static"
 	AegisLateGuard    Algorithm = "aegis-late-guard"
 	AegisConnect32    Algorithm = "aegis-connect-32"
@@ -119,6 +120,8 @@ func Run(ctx context.Context, g *graph.Graph, source, target int, alg Algorithm)
 		r, err = bidirectionalDijkstra(ctx, g, source, target)
 	case Aegis:
 		r, err = acbs(ctx, g, source, target)
+	case AegisEntropic:
+		r, err = acbsEntropic(ctx, g, source, target)
 	case AegisStatic:
 		r, err = acbsStatic(ctx, g, source, target)
 	case AegisLateGuard:
