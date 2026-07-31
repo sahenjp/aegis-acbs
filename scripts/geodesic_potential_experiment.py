@@ -45,16 +45,8 @@ def main() -> None:
     text = replace_once(
         text,
         "\tpotential := newACBSPotential(g, source, target, opts.projection)\n",
-        "\tpotential := newACBSPotential(g, source, target, opts.projection, opts.geodesic)\n",
+        "\tpotential := newACBSPotentialMode(g, source, target, opts.projection, opts.geodesic)\n",
         "potential construction",
-    )
-    text = text.replace(
-        "newACBSPotential(g, source, target, false)",
-        "newACBSPotential(g, source, target, false, false)",
-    )
-    text = text.replace(
-        "newACBSPotential(g, source, target, true)",
-        "newACBSPotential(g, source, target, true, false)",
     )
     text = replace_once(
         text,
@@ -65,8 +57,11 @@ def main() -> None:
     text = replace_once(
         text,
         "func newACBSPotential(g *graph.Graph, source, target int, projection bool) acbsPotential {\n",
-        "func newACBSPotential(g *graph.Graph, source, target int, projection, geodesic bool) acbsPotential {\n",
-        "potential signature",
+        "func newACBSPotential(g *graph.Graph, source, target int, projection bool) acbsPotential {\n"
+        "\treturn newACBSPotentialMode(g, source, target, projection, false)\n"
+        "}\n\n"
+        "func newACBSPotentialMode(g *graph.Graph, source, target int, projection, geodesic bool) acbsPotential {\n",
+        "potential constructors",
     )
     text = replace_once(
         text,
@@ -121,6 +116,12 @@ func (p acbsPotential) metricMeters(ax, ay, az, bx, by, bz float64) float64 {
         'acbsEntropicSchedulerVersion = "entropic-proof-rate-v2"',
         'acbsEntropicSchedulerVersion = "balanced-geodesic-v1"',
         "candidate version",
+    )
+    text = replace_once(
+        text,
+        "\tif opts.entropic {\n\t\treturn acbsEntropicSchedulerVersion\n\t}\n",
+        "\tif opts.entropic || opts.geodesic {\n\t\treturn acbsEntropicSchedulerVersion\n\t}\n",
+        "scheduler identity",
     )
     path.write_text(text)
 
