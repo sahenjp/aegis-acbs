@@ -5,7 +5,7 @@
 **アルゴリズムの仕組みから大規模検証、開発参加、脆弱性報告までを日本語で追える資料集。**
 
 ![Language](https://img.shields.io/badge/本文-日本語-2563eb)
-![Documents](https://img.shields.io/badge/主要文書-8冊-7c3aed)
+![Documents](https://img.shields.io/badge/主要文書-9冊-7c3aed)
 ![Evidence](https://img.shields.io/badge/検証-再現可能-16a34a)
 ![Status](https://img.shields.io/badge/段階-研究プロトタイプ-475569)
 
@@ -18,7 +18,7 @@
 > [!NOTE]
 > 本文は日本語を基準にしています。`frontier`、`potential`、`scheduler`、`incumbent`など、コードや研究文献と対応させる必要がある語は英語識別子を併記します。
 
-## 8つの主要文書
+## 9つの主要文書
 
 <table>
 <tr>
@@ -122,7 +122,22 @@
 <tr>
 <td width="50%" valign="top">
 
-### 07 — [コントリビューション](../CONTRIBUTING.md)
+### 07 — [Metric ALT potential](METRIC_ALT.md)
+
+**ACBSの対称feasible potentialをlandmark下界で強化する候補。**
+
+- 有向グラフの無向relaxation
+- landmark metricと逆三角不等式
+- `|Δφ₂| ≤ 2c`のfeasibility証明
+- 4 / 8 / 16 landmarksの比較
+- 前処理時間、追加メモリ、採用gate
+
+production `aegis`を変えず、`aegis-alt`として比較できます。
+
+</td>
+<td width="50%" valign="top">
+
+### 08 — [コントリビューション](../CONTRIBUTING.md)
 
 **変更を安全に提案・検証するための開発手順。**
 
@@ -135,9 +150,11 @@
 正確性、再現性、不利な結果の保存を必須としています。
 
 </td>
+</tr>
+<tr>
 <td width="50%" valign="top">
 
-### 08 — [セキュリティ](../SECURITY.md)
+### 09 — [セキュリティ](../SECURITY.md)
 
 **脆弱性報告と安全な運用の方針。**
 
@@ -148,6 +165,21 @@
 - checksumとrelease artifactの確認
 
 脆弱性の詳細は公開Issueへ投稿しないでください。
+
+</td>
+<td width="50%" valign="top">
+
+### 実験候補の扱い
+
+**数式上の安全性と性能評価を分離します。**
+
+- production algorithmは比較基準として固定
+- 候補名を明示して実行
+- 前処理とquery時間を分離
+- 失敗候補と反例も保存
+- Tokyo gate前はDraftを維持
+
+新しいpotentialやschedulerを既定値へ直接昇格させません。
 
 </td>
 </tr>
@@ -164,6 +196,10 @@ flowchart TB
     C --> B[ベンチマーク方法]
     B --> T[東京検証]
     T --> W[関連研究]
+
+    A --> M[Metric ALT potential]
+    C --> M
+    M --> B
 
     R --> D[データ形式]
     D --> B
@@ -184,6 +220,7 @@ flowchart TB
 |---|---|
 | ACBSの仕組みを知る | アルゴリズム → 正確性 |
 | ベンチマークの数値を読む | ベンチマーク方法 → 東京検証 |
+| landmark potentialを理解する | アルゴリズム → 正確性 → Metric ALT potential |
 | 新規性や既存研究との関係を確認する | 関連研究 → アルゴリズム → 東京検証 |
 | OSMやDIMACSを取り込む | データ形式 → クイックスタート |
 | schedulerや停止条件を変更する | コントリビューション → アルゴリズム → 正確性 → ベンチマーク方法 |
@@ -197,6 +234,7 @@ flowchart TB
 | frontier | 一方向の探索境界。priority queueと未確定labelを含む |
 | potential | 辺コストを安全に変換し、探索を誘導する頂点関数 |
 | scheduler | 次の辺処理chunkを前後どちらへ配るか決める部分 |
+| landmark | graph-wide前処理距離からquery下界を構成する基準頂点 |
 | upper bound / 上界 | 実在する発見済み完全経路の最良コスト |
 | lower bound / 下界 | 未確定経路が下回れない安全な境界 |
 | incumbent | 現在までに見つかった最良の完全経路 |
