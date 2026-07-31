@@ -22,7 +22,7 @@ jobs:
           download() {
             local name=$1
             local url=$2
-            local tmp="extracts/$name.osm.pbf.part"
+            local tmp="extracts/$name.part.osm.pbf"
             local dst="extracts/$name.osm.pbf"
             rm -f "$tmp" "$dst"
             curl -fL --retry 6 --retry-all-errors --retry-delay 2 \
