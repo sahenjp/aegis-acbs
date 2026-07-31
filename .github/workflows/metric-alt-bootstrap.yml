@@ -1,0 +1,59 @@
+name: Metric ALT candidate validation
+
+on:
+  pull_request:
+  push:
+    branches: [feat/metric-alt-potential]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Materialize sources
+        run: |
+          python3 scripts/materialize_metric_alt.py
+          gofmt -w cmd/aegis/main.go internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go
+      - name: Validate
+        run: |
+          git diff --check
+          go test ./...
+          go vet ./...
+          go test -race ./internal/search ./internal/graph ./internal/bench ./internal/server
+          go build ./cmd/aegis
+      - name: Fixture smoke
+        run: |
+          go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+          "$RUNNER_TEMP/aegis" import-osm \
+            --input benchdata/hatfield-uk.osm \
+            --output "$RUNNER_TEMP/hatfield.aegis" \
+            --profile car \
+            --metric time
+          "$RUNNER_TEMP/aegis" benchmark \
+            --graph "$RUNNER_TEMP/hatfield.aegis" \
+            --queries 100 \
+            --repeats 1 \
+            --algorithms aegis,aegis-alt \
+            --output "$RUNNER_TEMP/report.json" \
+            --html ""
+      - name: Collect candidate
+        run: |
+          mkdir -p candidate/cmd/aegis candidate/internal/search
+          cp cmd/aegis/main.go candidate/cmd/aegis/main.go
+          cp internal/search/acbs.go candidate/internal/search/acbs.go
+          cp internal/search/search.go candidate/internal/search/search.go
+          cp internal/search/metric_alt.go candidate/internal/search/metric_alt.go
+          cp internal/search/metric_alt_test.go candidate/internal/search/metric_alt_test.go
+      - uses: actions/upload-artifact@v6
+        with:
+          name: metric-alt-candidate
+          path: candidate
+          if-no-files-found: error
