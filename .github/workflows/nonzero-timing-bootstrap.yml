@@ -1,0 +1,41 @@
+name: Nonzero timing validation
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/nonzero-duration-telemetry
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Materialize
+        run: |
+          if [[ ! -f internal/search/timing_test.go ]]; then
+            python3 scripts/materialize_nonzero_timing.py
+          fi
+          gofmt -w internal/search/search.go internal/search/timing_test.go internal/bench/stress.go internal/bench/timing_test.go
+      - name: Validate
+        run: |
+          git diff --check
+          go test ./...
+          go vet ./...
+          go test -race ./internal/search ./internal/bench
+      - name: Commit validated sources
+        run: |
+          git add internal/search/search.go internal/search/timing_test.go internal/bench/stress.go internal/bench/timing_test.go
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "fix(bench): keep sub-tick timing telemetry positive"
+          git push origin HEAD:fix/nonzero-duration-telemetry
