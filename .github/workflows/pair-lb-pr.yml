@@ -20,6 +20,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends osmium-tool
+      - name: Fix materializer import match
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("scripts/pair_lb_experiment.py")
+          text = path.read_text()
+          old_source = "'import (\\n\\t\"context\"\\n\\t\"math\"\\n)'"
+          new_source = "'import (\\n\\t\"context\"\\n\\t\"math\"\\n\\n\\t\"github.com/lasder-ca/aegis-acbs/internal/graph\"\\n)'"
+          old_target = "'import (\\n\\t\"context\"\\n\\t\"math\"\\n\\t\"sort\"\\n)'"
+          new_target = "'import (\\n\\t\"context\"\\n\\t\"math\"\\n\\t\"sort\"\\n\\n\\t\"github.com/lasder-ca/aegis-acbs/internal/graph\"\\n)'"
+          if text.count(old_source) != 1 or text.count(old_target) != 1:
+              raise SystemExit("unexpected materializer import template")
+          path.write_text(text.replace(old_source, new_source).replace(old_target, new_target))
+          PY
       - name: Materialize candidate
         run: |
           python3 scripts/pair_lb_experiment.py
