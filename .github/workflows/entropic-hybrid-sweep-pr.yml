@@ -1,0 +1,192 @@
+name: Entropic hybrid scheduler sweep
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: hybrid-current
+            minimum_share: '0.125'
+            temperature: '0.80'
+            switch_penalty: '0.08'
+            priority_after: '0.80'
+            budget_power: '2'
+          - name: hybrid-proximal
+            minimum_share: '0.0625'
+            temperature: '0.50'
+            switch_penalty: '0.75'
+            priority_after: '0.50'
+            budget_power: '1'
+          - name: hybrid-decisive
+            minimum_share: '0.0625'
+            temperature: '0.35'
+            switch_penalty: '0.50'
+            priority_after: '0.50'
+            budget_power: '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Install Osmium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osmium-tool
+      - name: Materialize hybrid variant
+        env:
+          MINIMUM_SHARE: ${{ matrix.minimum_share }}
+          TEMPERATURE: ${{ matrix.temperature }}
+          SWITCH_PENALTY: ${{ matrix.switch_penalty }}
+          PRIORITY_AFTER: ${{ matrix.priority_after }}
+          BUDGET_POWER: ${{ matrix.budget_power }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          scheduler = Path('internal/search/acbs_entropic_scheduler.go')
+          source = scheduler.read_text()
+          replacements = {
+              'acbsMinimumDirectionShare = 1.0 / 8.0': f"acbsMinimumDirectionShare = {os.environ['MINIMUM_SHARE']}",
+              'acbsPriorityWeightAfter  = 0.80': f"acbsPriorityWeightAfter  = {os.environ['PRIORITY_AFTER']}",
+              'acbsSwitchPenalty        = 0.08': f"acbsSwitchPenalty        = {os.environ['SWITCH_PENALTY']}",
+              'acbsMirrorTemperature    = 0.80': f"acbsMirrorTemperature    = {os.environ['TEMPERATURE']}",
+          }
+          for old, new in replacements.items():
+              if old not in source:
+                  raise SystemExit(f'missing scheduler target: {old}')
+              source = source.replace(old, new, 1)
+          if os.environ['BUDGET_POWER'] == '1':
+              old = '1.0 + 3.0*certainty*certainty'
+              if old not in source:
+                  raise SystemExit(f'missing scheduler target: {old}')
+              source = source.replace(old, '1.0 + 3.0*certainty', 1)
+          scheduler.write_text(source)
+
+          acbs = Path('internal/search/acbs.go')
+          source = acbs.read_text()
+          old = '} else if opts.entropic {\n\t\t\tdecision = entropicScheduler.choose(frontF, frontB, lastDirection, bestReduced != inf)'
+          new = '} else if opts.entropic && bestReduced != inf {\n\t\t\tdecision = entropicScheduler.choose(frontF, frontB, lastDirection, true)'
+          if old not in source:
+              raise SystemExit('missing direction phase target')
+          source = source.replace(old, new, 1)
+          old = 'if opts.entropic {\n\t\t\tbudget = acbsEntropicEdgeBudget(g.EdgeCount, decision.certainty, bestReduced != inf)\n\t\t}'
+          new = 'if opts.entropic && bestReduced != inf {\n\t\t\tbudget = acbsEntropicEdgeBudget(g.EdgeCount, decision.certainty, true)\n\t\t}'
+          if old not in source:
+              raise SystemExit('missing budget phase target')
+          source = source.replace(old, new, 1)
+          old = '''\t\tif opts.entropic {
+\t\t\tafterPriorityF, afterPriorityB := beforePriorityF, beforePriorityB
+\t\t\tif okF {
+\t\t\t\tafterPriorityF = frontF.priority
+\t\t\t}
+\t\t\tif okB {
+\t\t\t\tafterPriorityB = frontB.priority
+\t\t\t}
+\t\t\tdirectionalGain := acbsDirectionalGain(
+\t\t\t\tdirection, beforePriorityF, afterPriorityF, beforePriorityB, afterPriorityB,
+\t\t\t)
+\t\t\tqueueGrowth := qf.Len() - beforeQF
+\t\t\tif direction == 'B' {
+\t\t\t\tqueueGrowth = qb.Len() - beforeQB
+\t\t\t}
+\t\t\twork = schedulerWork(
+\t\t\t\tstats.Relaxed-beforeRelaxed,
+\t\t\t\tstats.Expanded-beforeExpanded,
+\t\t\t\tqueueGrowth,
+\t\t\t)
+\t\t\tentropicScheduler.observe(direction, directionalGain, work)
+\t\t} else if opts.adaptive {
+\t\t\tinstant := efficiencyScore(gain, work)
+\t\t\tif direction == 'F' {
+\t\t\t\tscoreF = emaScore(scoreF, instant, sampledF)
+\t\t\t\tsampledF = true
+\t\t\t} else {
+\t\t\t\tscoreB = emaScore(scoreB, instant, sampledB)
+\t\t\t\tsampledB = true
+\t\t\t}
+\t\t}'''
+          new = '''\t\tif opts.entropic {
+\t\t\tafterPriorityF, afterPriorityB := beforePriorityF, beforePriorityB
+\t\t\tif okF {
+\t\t\t\tafterPriorityF = frontF.priority
+\t\t\t}
+\t\t\tif okB {
+\t\t\t\tafterPriorityB = frontB.priority
+\t\t\t}
+\t\t\tdirectionalGain := acbsDirectionalGain(
+\t\t\t\tdirection, beforePriorityF, afterPriorityF, beforePriorityB, afterPriorityB,
+\t\t\t)
+\t\t\tqueueGrowth := qf.Len() - beforeQF
+\t\t\tif direction == 'B' {
+\t\t\t\tqueueGrowth = qb.Len() - beforeQB
+\t\t\t}
+\t\t\twork = schedulerWork(
+\t\t\t\tstats.Relaxed-beforeRelaxed,
+\t\t\t\tstats.Expanded-beforeExpanded,
+\t\t\t\tqueueGrowth,
+\t\t\t)
+\t\t\tentropicScheduler.observe(direction, directionalGain, work)
+\t\t}
+\t\tif opts.adaptive && (!opts.entropic || beforeBest == inf) {
+\t\t\tinstant := efficiencyScore(gain, work)
+\t\t\tif direction == 'F' {
+\t\t\t\tscoreF = emaScore(scoreF, instant, sampledF)
+\t\t\t\tsampledF = true
+\t\t\t} else {
+\t\t\t\tscoreB = emaScore(scoreB, instant, sampledB)
+\t\t\t\tsampledB = true
+\t\t\t}
+\t\t}'''
+          if old not in source:
+              raise SystemExit('missing observation phase target')
+          acbs.write_text(source.replace(old, new, 1))
+          PY
+          gofmt -w internal/search/acbs.go internal/search/acbs_entropic_scheduler.go
+          go test ./internal/search
+          go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Download and convert extracts
+        run: |
+          curl -fsSL --retry 3 https://download.geofabrik.de/europe/andorra-latest.osm.pbf -o "$RUNNER_TEMP/andorra.osm.pbf"
+          curl -fsSL --retry 3 https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf -o "$RUNNER_TEMP/liechtenstein.osm.pbf"
+          osmium cat "$RUNNER_TEMP/andorra.osm.pbf" -o "$RUNNER_TEMP/andorra.osm" --overwrite
+          osmium cat "$RUNNER_TEMP/liechtenstein.osm.pbf" -o "$RUNNER_TEMP/liechtenstein.osm" --overwrite
+      - name: Import and evaluate deterministic work
+        run: |
+          set -euo pipefail
+          mkdir -p "artifacts/${{ matrix.name }}"
+          for region in andorra liechtenstein; do
+            for metric in distance time; do
+              graph="$RUNNER_TEMP/$region-$metric.aegis"
+              "$RUNNER_TEMP/aegis" import-osm \
+                --input "$RUNNER_TEMP/$region.osm" \
+                --output "$graph" \
+                --profile car \
+                --metric "$metric"
+              "$RUNNER_TEMP/aegis" benchmark \
+                --graph "$graph" \
+                --queries 1000 \
+                --repeats 1 \
+                --order interleaved \
+                --suite mixed \
+                --seed 1010 \
+                --algorithms aegis,aegis-entropic \
+                --output "artifacts/${{ matrix.name }}/$region-$metric.json"
+            done
+          done
+      - name: Upload reports
+        uses: actions/upload-artifact@v6
+        with:
+          name: entropic-hybrid-${{ matrix.name }}
+          path: artifacts/${{ matrix.name }}
+          if-no-files-found: error
