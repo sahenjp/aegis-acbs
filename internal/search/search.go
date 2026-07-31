@@ -30,7 +30,13 @@ const (
 	AegisRace         Algorithm = "aegis-race"
 )
 
-const policyVersion = "road-v3-time-aware"
+const (
+	policyVersion = "road-v3-time-aware"
+	// Below the first ACBS edge-budget tier, the proof scheduler has no room
+	// to amortize its state updates before local routes terminate. Preserve the
+	// production transition system while retaining the candidate identity.
+	aegisEntropicMinimumEdges = 10_000
+)
 
 // Decision exposes the deterministic features used by the Aegis selector.
 // PredictedWork is a unitless relative estimate; it is not presented as time.
@@ -121,7 +127,13 @@ func Run(ctx context.Context, g *graph.Graph, source, target int, alg Algorithm)
 	case Aegis:
 		r, err = acbs(ctx, g, source, target)
 	case AegisEntropic:
-		r, err = acbsEntropic(ctx, g, source, target)
+		if g.EdgeCount < aegisEntropicMinimumEdges {
+			r, err = acbs(ctx, g, source, target)
+			r.Stats.Algorithm = AegisEntropic
+			r.Stats.SchedulerVersion = acbsEntropicSchedulerVersion
+		} else {
+			r, err = acbsEntropic(ctx, g, source, target)
+		}
 	case AegisStatic:
 		r, err = acbsStatic(ctx, g, source, target)
 	case AegisLateGuard:
