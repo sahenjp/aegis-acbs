@@ -1,4 +1,4 @@
-name: Directed ALT feasibility diagnosis
+name: Metric ALT potential evaluation
 
 on:
   pull_request:
@@ -7,9 +7,13 @@ permissions:
   contents: read
 
 jobs:
-  diagnose:
+  evaluate:
+    strategy:
+      fail-fast: false
+      matrix:
+        landmarks: [4, 8, 16]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -20,153 +24,62 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends osmium-tool
-      - name: Materialize four-landmark candidate
+      - name: Materialize candidate
         run: |
-          python3 scripts/alt_potential_experiment.py --landmarks 4
-          cat >> internal/search/alt_experiment.go <<'GO'
-
-          type ALTBoundExplanation struct {
-            ChordForward  uint64
-            ChordBackward uint64
-            ALTForward    uint64
-            ALTBackward   uint64
-            ForwardLandmark int
-            BackwardLandmark int
-            ForwardTerm string
-            BackwardTerm string
-            Forward uint64
-            Backward uint64
-          }
-
-          type ALTFeasibilityViolation struct {
-            Source int
-            Target int
-            From int
-            To int
-            Cost uint64
-            PhiFrom int64
-            PhiTo int64
-            ForwardReduced int64
-            BackwardReduced int64
-            FromBounds ALTBoundExplanation
-            ToBounds ALTBoundExplanation
-          }
-
-          func DiagnoseALTFeasibility(g *graph.Graph, source, target int) *ALTFeasibilityViolation {
-            p := newACBSPotentialMode(g, source, target, false, true)
-            for from := range g.Nodes {
-              phiFrom := p.phi(g, from)
-              fromBounds := explainALTBounds(g, p, from)
-              for _, edge := range g.OutEdges(from) {
-                phiTo := p.phi(g, edge.To)
-                forward := int64(2*edge.Cost) + phiTo - phiFrom
-                backward := int64(2*edge.Cost) + phiFrom - phiTo
-                if forward < 0 || backward < 0 {
-                  return &ALTFeasibilityViolation{
-                    Source: source, Target: target,
-                    From: from, To: edge.To, Cost: edge.Cost,
-                    PhiFrom: phiFrom, PhiTo: phiTo,
-                    ForwardReduced: forward, BackwardReduced: backward,
-                    FromBounds: fromBounds,
-                    ToBounds: explainALTBounds(g, p, edge.To),
-                  }
-                }
-              }
-            }
-            return nil
-          }
-
-          func explainALTBounds(g *graph.Graph, p acbsPotential, v int) ALTBoundExplanation {
-            x, y, z := g.UnitVector(v)
-            explanation := ALTBoundExplanation{
-              ChordForward: lowerBoundCost(chordUnitMeters(x, y, z, p.targetX, p.targetY, p.targetZ), p.costPerMeter),
-              ChordBackward: lowerBoundCost(chordUnitMeters(x, y, z, p.sourceX, p.sourceY, p.sourceZ), p.costPerMeter),
-              ForwardLandmark: -1,
-              BackwardLandmark: -1,
-            }
-            if p.alt != nil {
-              for i, landmark := range p.alt.landmarks {
-                from := p.alt.from[i]
-                to := p.alt.to[i]
-                if from[p.target] != inf && from[v] != inf && from[p.target] > from[v] {
-                  value := from[p.target] - from[v]
-                  if value > explanation.ALTForward {
-                    explanation.ALTForward = value
-                    explanation.ForwardLandmark = landmark
-                    explanation.ForwardTerm = "d(L,t)-d(L,v)"
-                  }
-                }
-                if to[v] != inf && to[p.target] != inf && to[v] > to[p.target] {
-                  value := to[v] - to[p.target]
-                  if value > explanation.ALTForward {
-                    explanation.ALTForward = value
-                    explanation.ForwardLandmark = landmark
-                    explanation.ForwardTerm = "d(v,L)-d(t,L)"
-                  }
-                }
-                if from[v] != inf && from[p.source] != inf && from[v] > from[p.source] {
-                  value := from[v] - from[p.source]
-                  if value > explanation.ALTBackward {
-                    explanation.ALTBackward = value
-                    explanation.BackwardLandmark = landmark
-                    explanation.BackwardTerm = "d(L,v)-d(L,s)"
-                  }
-                }
-                if to[p.source] != inf && to[v] != inf && to[p.source] > to[v] {
-                  value := to[p.source] - to[v]
-                  if value > explanation.ALTBackward {
-                    explanation.ALTBackward = value
-                    explanation.BackwardLandmark = landmark
-                    explanation.BackwardTerm = "d(s,L)-d(v,L)"
-                  }
-                }
-              }
-            }
-            explanation.Forward = explanation.ChordForward
-            if explanation.ALTForward > explanation.Forward {
-              explanation.Forward = explanation.ALTForward
-            }
-            explanation.Backward = explanation.ChordBackward
-            if explanation.ALTBackward > explanation.Backward {
-              explanation.Backward = explanation.ALTBackward
-            }
-            return explanation
-          }
-          GO
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('cmd/aegis/main.go')
-          text = path.read_text()
-          needle = '''\t\tfmt.Printf("alt-preprocess landmarks=%d duration=%.3fs memory=%.2fMiB\\n", preparation.Landmarks, preparation.Duration.Seconds(), float64(preparation.Bytes)/(1024*1024))\n'''
-          replacement = needle + '''\t\tif len(g.Nodes) > 17149 {\n\t\t\tif violation := search.DiagnoseALTFeasibility(g, 16005, 17149); violation != nil {\n\t\t\t\treturn fmt.Errorf("ALT feasibility violation: %+v", *violation)\n\t\t\t}\n\t\t}\n'''
-          if text.count(needle) != 1:
-              raise SystemExit('benchmark preparation insertion not found')
-          path.write_text(text.replace(needle, replacement, 1))
-          PY
-          gofmt -w cmd/aegis/main.go internal/search/acbs.go internal/search/alt_experiment.go internal/search/alt_experiment_test.go
+          python3 scripts/metric_alt_experiment.py --landmarks ${{ matrix.landmarks }}
+          gofmt -w cmd/aegis/main.go internal/search/acbs.go internal/search/metric_alt_experiment.go internal/search/metric_alt_experiment_test.go
           go test ./internal/search
           go vet ./internal/search ./cmd/aegis
           go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
-      - name: Import Andorra distance graph
+      - name: Download extracts
         run: |
           set -euo pipefail
-          curl -fL --retry 6 --retry-all-errors --retry-delay 2 \
-            https://download.geofabrik.de/europe/andorra-latest.osm.pbf \
-            -o "$RUNNER_TEMP/andorra.osm.pbf"
-          osmium fileinfo "$RUNNER_TEMP/andorra.osm.pbf" >/dev/null
-          osmium cat "$RUNNER_TEMP/andorra.osm.pbf" \
-            -o "$RUNNER_TEMP/andorra.osm" --overwrite
-          "$RUNNER_TEMP/aegis" import-osm \
-            --input "$RUNNER_TEMP/andorra.osm" \
-            --output "$RUNNER_TEMP/andorra-distance.aegis" \
-            --profile car \
-            --metric distance
-      - name: Diagnose known failing query
+          download() {
+            local name=$1
+            local url=$2
+            local dst="$RUNNER_TEMP/$name.osm.pbf"
+            curl -fL --retry 6 --retry-all-errors --retry-delay 2 "$url" -o "$dst"
+            osmium fileinfo "$dst" >/dev/null
+            osmium cat "$dst" -o "$RUNNER_TEMP/$name.osm" --overwrite
+          }
+          download andorra https://download.geofabrik.de/europe/andorra-latest.osm.pbf
+          download luxembourg https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf
+          download bremen https://download.geofabrik.de/europe/germany/bremen-latest.osm.pbf
+      - name: Benchmark candidate
         run: |
-          "$RUNNER_TEMP/aegis" benchmark \
-            --graph "$RUNNER_TEMP/andorra-distance.aegis" \
-            --queries 1 \
-            --repeats 1 \
-            --seed 1010 \
-            --algorithms aegis-entropic \
-            --output "$RUNNER_TEMP/diagnostic.json"
+          set -euo pipefail
+          out="artifacts/metric-alt-k${{ matrix.landmarks }}"
+          mkdir -p "$out/materialized"
+          cp cmd/aegis/main.go "$out/materialized/"
+          cp internal/search/acbs.go "$out/materialized/"
+          cp internal/search/metric_alt_experiment.go "$out/materialized/"
+          cp internal/search/metric_alt_experiment_test.go "$out/materialized/"
+          for region in andorra luxembourg bremen; do
+            for metric in distance time; do
+              graph="$RUNNER_TEMP/$region-$metric.aegis"
+              "$RUNNER_TEMP/aegis" import-osm \
+                --input "$RUNNER_TEMP/$region.osm" \
+                --output "$graph" \
+                --profile car \
+                --metric "$metric"
+              for seed in 1010 424242 20260717; do
+                run_dir="$out/$region-$metric/seed-$seed"
+                mkdir -p "$run_dir"
+                "$RUNNER_TEMP/aegis" benchmark \
+                  --graph "$graph" \
+                  --queries 300 \
+                  --repeats 1 \
+                  --order interleaved \
+                  --suite mixed \
+                  --seed "$seed" \
+                  --algorithms aegis,aegis-entropic \
+                  --output "$run_dir/report.json" \
+                  2>&1 | tee "$run_dir/run.log"
+              done
+            done
+          done
+      - uses: actions/upload-artifact@v6
+        with:
+          name: metric-alt-k${{ matrix.landmarks }}
+          path: artifacts/metric-alt-k${{ matrix.landmarks }}
+          if-no-files-found: error
