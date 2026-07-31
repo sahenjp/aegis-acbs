@@ -114,6 +114,20 @@ func TestACBSEntropicProofRateDefersLogTransformUntilSecondSample(t *testing.T) 
 	}
 }
 
+func TestACBSEntropicSeedReusesProductionEfficiency(t *testing.T) {
+	var s acbsEntropicScheduler
+	s.seed(2_000_000, 500_000, true, true)
+	if !s.active() {
+		t.Fatal("scheduler did not activate")
+	}
+	if got := s.forward.rate(); math.Abs(got-2) > 1e-5 {
+		t.Fatalf("forward seed rate = %f", got)
+	}
+	if got := s.backward.rate(); math.Abs(got-0.5) > 1e-5 {
+		t.Fatalf("backward seed rate = %f", got)
+	}
+}
+
 func TestACBSEntropicProofRateUsesRobustLogUpdate(t *testing.T) {
 	var r acbsProofRate
 	r.update(99, 99)
