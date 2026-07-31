@@ -17,6 +17,7 @@ const (
 	BiDijkstra        Algorithm = "bidijkstra"
 	AStar             Algorithm = "astar"
 	Aegis             Algorithm = "aegis"
+	AegisALT          Algorithm = "aegis-alt"
 	AegisStatic       Algorithm = "aegis-static"
 	AegisLateGuard    Algorithm = "aegis-late-guard"
 	AegisConnect32    Algorithm = "aegis-connect-32"
@@ -91,6 +92,8 @@ type Stats struct {
 	OptimalityGap              uint64    `json:"optimalityGap,omitempty"`
 	SchedulerVersion           string    `json:"schedulerVersion,omitempty"`
 	PotentialModel             string    `json:"potentialModel,omitempty"`
+	PotentialLandmarks         int       `json:"potentialLandmarks,omitempty"`
+	PotentialIndexBytes        uint64    `json:"potentialIndexBytes,omitempty"`
 	AllocBytes                 uint64    `json:"allocBytes,omitempty"`
 	AllocObjects               uint64    `json:"allocObjects,omitempty"`
 }
@@ -119,6 +122,8 @@ func Run(ctx context.Context, g *graph.Graph, source, target int, alg Algorithm)
 		r, err = bidirectionalDijkstra(ctx, g, source, target)
 	case Aegis:
 		r, err = acbs(ctx, g, source, target)
+	case AegisALT:
+		r, err = acbsMetricALT(ctx, g, source, target)
 	case AegisStatic:
 		r, err = acbsStatic(ctx, g, source, target)
 	case AegisLateGuard:

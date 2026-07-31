@@ -158,6 +158,11 @@ func route(args []string) error {
 	if err != nil {
 		return err
 	}
+	cleanup, err := prepareSearchIndexes(g, []search.Algorithm{search.Algorithm(*alg)})
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	s, err := resolve(g, *src)
 	if err != nil {
 		return err
@@ -250,6 +255,11 @@ func benchmark(args []string) error {
 		}
 		list = append(list, search.Aegis)
 	}
+	cleanup, err := prepareSearchIndexes(g, list)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	report, err := bench.Run(context.Background(), g, bench.Config{Queries: *queries, Seed: *seed, Algorithms: list, Warmup: 3, Repeats: *repeats, BatchSize: *batchSize, Order: *order, MeasureMemory: *measureMemory, Timeout: *timeout, Suite: *suite, PairMode: *pairMode})
 	if err != nil {
 		return err
@@ -314,6 +324,11 @@ func stress(args []string) error {
 	if err != nil {
 		return err
 	}
+	cleanup, err := prepareSearchIndexes(g, []search.Algorithm{search.Algorithm(*alg)})
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	report, err := bench.RunStress(context.Background(), g, bench.StressConfig{
 		Queries: *queries, Workers: *workers, Seed: *seed, Algorithm: search.Algorithm(*alg),
 		VerifyEvery: *verifyEvery, Timeout: *timeout, Suite: *suite, PairMode: *pairMode,
@@ -700,6 +715,30 @@ func inspect(args []string) error {
 	}
 	minLat, minLon, maxLat, maxLon := g.BoundingBox()
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{"name": g.Name, "source": g.Source, "profile": g.Profile, "metric": g.Metric, "nodes": len(g.Nodes), "edges": g.EdgeCount, "directed": g.Directed, "minCostPerMeter": g.MinCostPerMeter, "meanCostPerMeter": g.MeanCostPerMeter, "heuristicStrength": g.HeuristicStrength, "averageDegree": g.AverageDegree, "diameterMeters": g.DiameterMeters, "bbox": []float64{minLat, minLon, maxLat, maxLon}})
+}
+
+func prepareSearchIndexes(g *graph.Graph, algorithms []search.Algorithm) (func(), error) {
+	for _, algorithm := range algorithms {
+		if algorithm != search.AegisALT {
+			continue
+		}
+		landmarks := search.RecommendedMetricALTLandmarks(g)
+		preparation, err := search.PrepareMetricALT(g, landmarks)
+		if err != nil {
+			return func() {}, err
+		}
+		if preparation.Landmarks > 0 {
+			fmt.Fprintf(os.Stderr,
+				"metric-alt preprocess: landmarks=%d duration=%.3fs memory=%.2fMiB reused=%t\n",
+				preparation.Landmarks,
+				preparation.Duration.Seconds(),
+				float64(preparation.Bytes)/(1024*1024),
+				preparation.Reused,
+			)
+		}
+		return func() { search.ReleaseMetricALT(g) }, nil
+	}
+	return func() {}, nil
 }
 
 func resolve(g *graph.Graph, s string) (int, error) {
