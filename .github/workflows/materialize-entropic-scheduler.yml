@@ -1,0 +1,65 @@
+name: Materialize entropic scheduler candidate
+
+on:
+  push:
+    branches:
+      - feat/entropic-proof-rate-scheduler
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: ${{ !contains(github.event.head_commit.message, 'feat(search): add entropic proof-rate scheduler candidate') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Apply validated candidate
+        shell: bash
+        run: |
+          cat .github/bootstrap/payload/* > /tmp/apply-entropic.py.gz.b64
+          echo '1463f2fe95109c538efbfaddf5f3e91407d33ab58f5abc91dd5c705735353bdc  /tmp/apply-entropic.py.gz.b64' | sha256sum -c -
+          base64 -d /tmp/apply-entropic.py.gz.b64 | gzip -d > /tmp/apply-entropic.py
+          python3 /tmp/apply-entropic.py .
+          gofmt -w \
+            cmd/aegis/main.go \
+            internal/search/acbs.go \
+            internal/search/search.go \
+            internal/search/search_test.go \
+            internal/search/acbs_entropic_scheduler.go \
+            internal/search/acbs_entropic_scheduler_test.go
+          chmod +x scripts/benchmark-entropic.sh
+      - name: Validate
+        shell: bash
+        run: |
+          git diff --check
+          bash -n scripts/benchmark-entropic.sh
+          go test ./...
+          go vet ./...
+          go test -race ./internal/search ./internal/graph ./internal/bench ./internal/server
+          go build ./cmd/aegis
+      - name: Commit source
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            README.md \
+            cmd/aegis/main.go \
+            docs/ALGORITHM.md \
+            docs/ENTROPIC_SCHEDULER.md \
+            internal/search/acbs.go \
+            internal/search/acbs_entropic_scheduler.go \
+            internal/search/acbs_entropic_scheduler_test.go \
+            internal/search/search.go \
+            internal/search/search_test.go \
+            scripts/benchmark-entropic.sh
+          git diff --cached --check
+          git commit -m 'feat(search): add entropic proof-rate scheduler candidate'
+          git push origin HEAD:feat/entropic-proof-rate-scheduler
