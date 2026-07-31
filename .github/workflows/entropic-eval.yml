@@ -1,0 +1,53 @@
+name: Entropic scheduler evaluation
+
+on:
+  push:
+    branches: [feat/entropic-proof-rate-scheduler]
+
+permissions:
+  contents: read
+
+jobs:
+  hatfield:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Build
+        run: go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Import distance graph
+        run: |
+          "$RUNNER_TEMP/aegis" import-osm \
+            --input benchdata/hatfield-uk.osm \
+            --output "$RUNNER_TEMP/hatfield-distance.aegis" \
+            --profile car \
+            --metric distance
+      - name: Import travel-time graph
+        run: |
+          "$RUNNER_TEMP/aegis" import-osm \
+            --input benchdata/hatfield-uk.osm \
+            --output "$RUNNER_TEMP/hatfield-time.aegis" \
+            --profile car \
+            --metric time
+      - name: Evaluate distance graph
+        env:
+          QUERIES: '3000'
+          REPEATS: '5'
+          SEEDS: '1010 424242 20260717'
+        run: scripts/benchmark-entropic.sh "$RUNNER_TEMP/hatfield-distance.aegis" artifacts/hatfield-distance
+      - name: Evaluate travel-time graph
+        env:
+          QUERIES: '3000'
+          REPEATS: '5'
+          SEEDS: '1010 424242 20260717'
+        run: scripts/benchmark-entropic.sh "$RUNNER_TEMP/hatfield-time.aegis" artifacts/hatfield-time
+      - name: Upload reports
+        uses: actions/upload-artifact@v6
+        with:
+          name: entropic-hatfield-reports
+          path: artifacts/hatfield-*
+          if-no-files-found: error
