@@ -17,8 +17,14 @@ def main() -> None:
 
     acbs = replace_once(
         acbs,
+        'import (\n\t"context"\n\t"math"\n)',
+        'import (\n\t"context"\n\t"math"\n\t"sort"\n)',
+        "sort import",
+    )
+    acbs = replace_once(
+        acbs,
         'acbsEntropicSchedulerVersion = "entropic-proof-rate-v2"',
-        'acbsEntropicSchedulerVersion = "pair-lower-bound-scan-v1"',
+        'acbsEntropicSchedulerVersion = "pair-lower-bound-exact-scan-v2"',
         "version",
     )
     acbs = replace_once(
@@ -50,7 +56,8 @@ def main() -> None:
 \t\t\tif opts.pairBound {
 \t\t\t\tstats.PairBoundScans++
 \t\t\t\tpairBound := acbsPairLowerBoundScan(g, potential, w, df, db, settledF, settledB)
-\t\t\t\tif pairBound > originalLowerBound {
+\t\t\t\tpairTightened := pairBound > originalLowerBound
+\t\t\t\tif pairTightened {
 \t\t\t\t\tstats.PairBoundTightens++
 \t\t\t\t\tgain := pairBound - originalLowerBound
 \t\t\t\t\tif gain > stats.PairBoundMaxGain {
@@ -58,7 +65,7 @@ def main() -> None:
 \t\t\t\t\t}
 \t\t\t\t\toriginalLowerBound = pairBound
 \t\t\t\t}
-\t\t\t\tif originalLowerBound >= best {
+\t\t\t\tif pairTightened && originalLowerBound >= best {
 \t\t\t\t\tstats.PairBoundTerminations++
 \t\t\t\t}
 \t\t\t}
@@ -72,6 +79,11 @@ def main() -> None:
     acbs = replace_once(acbs, old_bound, new_bound, "outer bound")
 
     helper = r'''
+type acbsPairPoint struct {
+	f uint64
+	g uint64
+}
+
 func acbsPairLowerBoundScan(
 	g *graph.Graph,
 	potential acbsPotential,
@@ -79,49 +91,104 @@ func acbsPairLowerBoundScan(
 	df, db []uint64,
 	settledF, settledB []bool,
 ) uint64 {
-	minForwardF, minForwardG := inf, inf
+	forward := make([]acbsPairPoint, 0, len(w.touchedF))
 	for _, raw := range w.touchedF {
 		v := int(raw)
 		if settledF[v] || df[v] == inf {
 			continue
 		}
 		hForward, _ := potential.bounds(g, v)
-		f := saturatingAdd(df[v], hForward)
-		if f < minForwardF {
-			minForwardF = f
-		}
-		if df[v] < minForwardG {
-			minForwardG = df[v]
-		}
+		forward = append(forward, acbsPairPoint{
+			f: saturatingAdd(df[v], hForward),
+			g: df[v],
+		})
 	}
 
-	minBackwardF, minBackwardG := inf, inf
+	backward := make([]acbsPairPoint, 0, len(w.touchedB))
 	for _, raw := range w.touchedB {
 		v := int(raw)
 		if settledB[v] || db[v] == inf {
 			continue
 		}
 		_, hBackward := potential.bounds(g, v)
-		f := saturatingAdd(db[v], hBackward)
-		if f < minBackwardF {
-			minBackwardF = f
+		backward = append(backward, acbsPairPoint{
+			f: saturatingAdd(db[v], hBackward),
+			g: db[v],
+		})
+	}
+	return acbsPairLowerBoundPoints(forward, backward)
+}
+
+func acbsPairLowerBoundPoints(forward, backward []acbsPairPoint) uint64 {
+	if len(forward) == 0 || len(backward) == 0 {
+		return 0
+	}
+	sort.Slice(forward, func(i, j int) bool {
+		if forward[i].f == forward[j].f {
+			return forward[i].g < forward[j].g
 		}
-		if db[v] < minBackwardG {
-			minBackwardG = db[v]
+		return forward[i].f < forward[j].f
+	})
+	sort.Slice(backward, func(i, j int) bool {
+		if backward[i].f == backward[j].f {
+			return backward[i].g < backward[j].g
+		}
+		return backward[i].f < backward[j].f
+	})
+
+	// At a threshold C, a pair with pair-lb <= C exists iff each frontier has
+	// a node with f <= C and the minimum corresponding g-values sum to <= C.
+	// Prefix minima make that predicate logarithmic after sorting.
+	for i := 1; i < len(forward); i++ {
+		if forward[i-1].g < forward[i].g {
+			forward[i].g = forward[i-1].g
+		}
+	}
+	for i := 1; i < len(backward); i++ {
+		if backward[i-1].g < backward[i].g {
+			backward[i].g = backward[i-1].g
 		}
 	}
 
-	if minForwardF == inf || minBackwardF == inf || minForwardG == inf || minBackwardG == inf {
-		return 0
+	lower := forward[0].f
+	if backward[0].f > lower {
+		lower = backward[0].f
 	}
-	bound := minForwardF
-	if minBackwardF > bound {
-		bound = minBackwardF
+	if cross := saturatingAdd(forward[len(forward)-1].g, backward[len(backward)-1].g); cross > lower {
+		lower = cross
 	}
-	if cross := saturatingAdd(minForwardG, minBackwardG); cross > bound {
-		bound = cross
+
+	upper := forward[0].f
+	if backward[0].f > upper {
+		upper = backward[0].f
 	}
-	return bound
+	if cross := saturatingAdd(forward[0].g, backward[0].g); cross > upper {
+		upper = cross
+	}
+	if lower >= upper {
+		return lower
+	}
+
+	feasible := func(limit uint64) bool {
+		fi := sort.Search(len(forward), func(i int) bool { return forward[i].f > limit })
+		bi := sort.Search(len(backward), func(i int) bool { return backward[i].f > limit })
+		if fi == 0 || bi == 0 {
+			return false
+		}
+		fg := forward[fi-1].g
+		bg := backward[bi-1].g
+		return fg <= limit && bg <= limit-fg
+	}
+
+	for lower < upper {
+		mid := lower + (upper-lower)/2
+		if feasible(mid) {
+			upper = mid
+		} else {
+			lower = mid + 1
+		}
+	}
+	return lower
 }
 
 '''
@@ -174,22 +241,11 @@ func TestACBSPairBoundCandidateRemainsExact(t *testing.T) {
 	}
 }
 
-func TestACBSPairLowerBoundUsesAllThreeTerms(t *testing.T) {
-	g := gridGraph(t, 4, 4, true)
-	w := acquireBiWorkspace(len(g.Nodes))
-	defer releaseBiWorkspace(w)
-	for _, v := range []int{1, 2} {
-		w.touchForward(v)
-		w.df[v] = uint64(10 + v)
-	}
-	for _, v := range []int{9, 10} {
-		w.touchBackward(v)
-		w.db[v] = uint64(20 + v)
-	}
-	p := newACBSPotential(g, 0, len(g.Nodes)-1, false)
-	got := acbsPairLowerBoundScan(g, p, w, w.df, w.db, w.settledF, w.settledB)
-	if got == 0 || got == inf {
-		t.Fatalf("invalid pair lower bound: %d", got)
+func TestACBSPairLowerBoundPointsCapturesCrossCorrelation(t *testing.T) {
+	forward := []acbsPairPoint{{f: 5, g: 100}, {f: 10, g: 1}}
+	backward := []acbsPairPoint{{f: 5, g: 100}, {f: 10, g: 1}}
+	if got := acbsPairLowerBoundPoints(forward, backward); got != 10 {
+		t.Fatalf("pair lower bound = %d, want 10", got)
 	}
 }
 '''
