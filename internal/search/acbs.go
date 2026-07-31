@@ -9,7 +9,7 @@ import (
 
 const (
 	acbsSchedulerVersion         = "edge-efficiency-v3"
-	acbsEntropicSchedulerVersion = "entropic-proof-rate-v1"
+	acbsEntropicSchedulerVersion = "entropic-proof-rate-v2"
 	acbsChordPotentialModel      = "balanced-chord-v3"
 	acbsProjectionModel          = "balanced-projection-v1"
 	acbsLateGuardScheduler       = "edge-efficiency-v3-late-upper-bound-guard-v1"
@@ -205,8 +205,9 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 		direction := byte(0)
 		if connectionGuardActive {
 			direction = chooseACBSStaticDirection(g, frontF, frontB, qf.Len(), qb.Len())
-		} else if opts.entropic {
-			decision = entropicScheduler.choose(frontF, frontB, lastDirection, bestReduced != inf)
+		} else if opts.entropic && bestReduced != inf {
+			entropicScheduler.seed(scoreF, scoreB, sampledF, sampledB)
+			decision = entropicScheduler.choose(frontF, frontB, lastDirection, true)
 			direction = decision.direction
 		} else if opts.adaptive {
 			direction = chooseACBSDirection(
@@ -227,8 +228,8 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 		}
 
 		budget := acbsEdgeBudget(g.EdgeCount, scoreF, scoreB, direction, bestReduced != inf)
-		if opts.entropic {
-			budget = acbsEntropicEdgeBudget(g.EdgeCount, decision.certainty, bestReduced != inf)
+		if opts.entropic && bestReduced != inf {
+			budget = acbsEntropicEdgeBudget(g.EdgeCount, decision.certainty, true)
 		}
 		if !opts.adaptive || connectionGuardActive {
 			budget = acbsBaseEdgeBudget(g.EdgeCount)
@@ -252,7 +253,7 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 		beforePriorityF, beforePriorityB := frontF.priority, frontB.priority
 		beforeScoreF := float64(scoreF) / 1_000_000.0
 		beforeScoreB := float64(scoreB) / 1_000_000.0
-		if opts.entropic {
+		if opts.entropic && entropicScheduler.active() {
 			beforeScoreF = entropicScheduler.forward.rate()
 			beforeScoreB = entropicScheduler.backward.rate()
 		}
@@ -410,7 +411,7 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 			stats.Expanded-beforeExpanded,
 			qf.Len()+qb.Len()-beforeQueues,
 		)
-		if opts.entropic {
+		if opts.entropic && beforeBest != inf {
 			afterPriorityF, afterPriorityB := beforePriorityF, beforePriorityB
 			if okF {
 				afterPriorityF = frontF.priority
@@ -443,7 +444,7 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 		}
 		afterScoreF := float64(scoreF) / 1_000_000.0
 		afterScoreB := float64(scoreB) / 1_000_000.0
-		if opts.entropic {
+		if opts.entropic && entropicScheduler.active() {
 			afterScoreF = entropicScheduler.forward.rate()
 			afterScoreB = entropicScheduler.backward.rate()
 		}
@@ -496,7 +497,7 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 
 	stats.ForwardEfficiency = float64(scoreF) / 1_000_000.0
 	stats.BackwardEfficiency = float64(scoreB) / 1_000_000.0
-	if opts.entropic {
+	if opts.entropic && entropicScheduler.active() {
 		stats.ForwardEfficiency = entropicScheduler.forward.rate()
 		stats.BackwardEfficiency = entropicScheduler.backward.rate()
 	}
