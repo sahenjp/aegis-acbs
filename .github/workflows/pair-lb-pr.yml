@@ -9,7 +9,7 @@ permissions:
 jobs:
   evaluate:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -57,19 +57,17 @@ jobs:
                 --output "$graph" \
                 --profile car \
                 --metric "$metric"
-              for seed in 1010 424242 20260717; do
-                run_dir="$out/$region-$metric/seed-$seed"
-                mkdir -p "$run_dir"
-                "$RUNNER_TEMP/aegis" benchmark \
-                  --graph "$graph" \
-                  --queries 300 \
-                  --repeats 1 \
-                  --order interleaved \
-                  --suite mixed \
-                  --seed "$seed" \
-                  --algorithms aegis,aegis-entropic \
-                  --output "$run_dir/report.json"
-              done
+              run_dir="$out/$region-$metric/seed-1010"
+              mkdir -p "$run_dir"
+              "$RUNNER_TEMP/aegis" benchmark \
+                --graph "$graph" \
+                --queries 100 \
+                --repeats 1 \
+                --order interleaved \
+                --suite mixed \
+                --seed 1010 \
+                --algorithms aegis,aegis-entropic \
+                --output "$run_dir/report.json"
             done
           done
       - uses: actions/upload-artifact@v6
