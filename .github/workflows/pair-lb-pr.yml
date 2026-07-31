@@ -9,7 +9,7 @@ permissions:
 jobs:
   evaluate:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -41,15 +41,15 @@ jobs:
           go test ./internal/search
           go vet ./internal/search
           go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
-      - name: Download Andorra extract
+      - name: Download Luxembourg extract
         run: |
           set -euo pipefail
           curl -fL --retry 6 --retry-all-errors --retry-delay 2 \
-            https://download.geofabrik.de/europe/andorra-latest.osm.pbf \
-            -o "$RUNNER_TEMP/andorra.osm.pbf"
-          osmium fileinfo "$RUNNER_TEMP/andorra.osm.pbf" >/dev/null
-          osmium cat "$RUNNER_TEMP/andorra.osm.pbf" \
-            -o "$RUNNER_TEMP/andorra.osm" --overwrite
+            https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf \
+            -o "$RUNNER_TEMP/luxembourg.osm.pbf"
+          osmium fileinfo "$RUNNER_TEMP/luxembourg.osm.pbf" >/dev/null
+          osmium cat "$RUNNER_TEMP/luxembourg.osm.pbf" \
+            -o "$RUNNER_TEMP/luxembourg.osm" --overwrite
       - name: Probe pair bound
         run: |
           set -euo pipefail
@@ -59,13 +59,13 @@ jobs:
           cp internal/search/search.go "$out/materialized/"
           cp internal/search/acbs_pair_bound_test.go "$out/materialized/"
           for metric in distance time; do
-            graph="$RUNNER_TEMP/andorra-$metric.aegis"
+            graph="$RUNNER_TEMP/luxembourg-$metric.aegis"
             "$RUNNER_TEMP/aegis" import-osm \
-              --input "$RUNNER_TEMP/andorra.osm" \
+              --input "$RUNNER_TEMP/luxembourg.osm" \
               --output "$graph" \
               --profile car \
               --metric "$metric"
-            run_dir="$out/andorra-$metric/seed-1010"
+            run_dir="$out/luxembourg-$metric/seed-1010"
             mkdir -p "$run_dir"
             "$RUNNER_TEMP/aegis" benchmark \
               --graph "$graph" \
@@ -79,6 +79,6 @@ jobs:
           done
       - uses: actions/upload-artifact@v6
         with:
-          name: pair-lower-bound-reports
+          name: pair-lower-bound-luxembourg-reports
           path: artifacts/pair-lb
           if-no-files-found: error
