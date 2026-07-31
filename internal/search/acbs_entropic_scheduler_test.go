@@ -89,6 +89,31 @@ func TestACBSEntropicDebtRoundingHasSubChunkPrefixDiscrepancy(t *testing.T) {
 	}
 }
 
+func TestACBSEntropicProofRateDefersLogTransformUntilSecondSample(t *testing.T) {
+	var r acbsProofRate
+	r.update(8, 2)
+	if r.samples != 1 || r.firstGain != 8 || r.firstWork != 2 {
+		t.Fatalf("first sufficient statistic not retained: %+v", r)
+	}
+	if r.logMean != 0 {
+		t.Fatalf("first observation eagerly materialized log mean: %f", r.logMean)
+	}
+	if got := r.rate(); math.Abs(got-3) > 1e-12 {
+		t.Fatalf("first rate = %f", got)
+	}
+	if got := r.logRate(); math.Abs(got-math.Log(3)) > 1e-12 {
+		t.Fatalf("first log rate = %f", got)
+	}
+
+	r.update(3, 3)
+	if r.samples != 2 {
+		t.Fatalf("samples = %d", r.samples)
+	}
+	if r.logMean == 0 {
+		t.Fatal("second observation did not activate log-domain estimator")
+	}
+}
+
 func TestACBSEntropicProofRateUsesRobustLogUpdate(t *testing.T) {
 	var r acbsProofRate
 	r.update(99, 99)
