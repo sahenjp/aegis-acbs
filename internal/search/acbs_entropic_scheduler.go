@@ -44,6 +44,15 @@ func (r acbsProofRate) logRate() float64 {
 
 func (r acbsProofRate) sampled() bool { return r.samples != 0 }
 
+func (r *acbsProofRate) seedFixedPoint(score uint64) {
+	// Production ACBS stores proof efficiency as gain/work scaled by 1e6.
+	// Reuse that sufficient statistic as the prior for the post-incumbent
+	// mirror-descent phase without replaying pre-incumbent chunks.
+	r.firstGain = score
+	r.firstWork = 1_000_000
+	r.samples = 1
+}
+
 func (r *acbsProofRate) update(gain, work uint64) {
 	// Most local road queries terminate after the first chunk. Preserve that
 	// fast path by storing the first sufficient statistic without evaluating
@@ -84,6 +93,19 @@ type acbsEntropicScheduler struct {
 	forward  acbsProofRate
 	backward acbsProofRate
 	debtF    float64
+}
+
+func (s *acbsEntropicScheduler) seed(scoreF, scoreB uint64, sampledF, sampledB bool) {
+	if !s.forward.sampled() && sampledF {
+		s.forward.seedFixedPoint(scoreF)
+	}
+	if !s.backward.sampled() && sampledB {
+		s.backward.seedFixedPoint(scoreB)
+	}
+}
+
+func (s acbsEntropicScheduler) active() bool {
+	return s.forward.sampled() || s.backward.sampled()
 }
 
 func (s *acbsEntropicScheduler) choose(frontF, frontB item, last byte, hasUpperBound bool) acbsScheduleDecision {
