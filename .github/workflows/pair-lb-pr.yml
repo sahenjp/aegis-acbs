@@ -9,7 +9,7 @@ permissions:
 jobs:
   evaluate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -27,21 +27,16 @@ jobs:
           go test ./internal/search
           go vet ./internal/search
           go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
-      - name: Download extracts
+      - name: Download Andorra extract
         run: |
           set -euo pipefail
-          download() {
-            local name=$1
-            local url=$2
-            local dst="$RUNNER_TEMP/$name.osm.pbf"
-            curl -fL --retry 6 --retry-all-errors --retry-delay 2 "$url" -o "$dst"
-            osmium fileinfo "$dst" >/dev/null
-            osmium cat "$dst" -o "$RUNNER_TEMP/$name.osm" --overwrite
-          }
-          download andorra https://download.geofabrik.de/europe/andorra-latest.osm.pbf
-          download luxembourg https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf
-          download bremen https://download.geofabrik.de/europe/germany/bremen-latest.osm.pbf
-      - name: Benchmark deterministic work
+          curl -fL --retry 6 --retry-all-errors --retry-delay 2 \
+            https://download.geofabrik.de/europe/andorra-latest.osm.pbf \
+            -o "$RUNNER_TEMP/andorra.osm.pbf"
+          osmium fileinfo "$RUNNER_TEMP/andorra.osm.pbf" >/dev/null
+          osmium cat "$RUNNER_TEMP/andorra.osm.pbf" \
+            -o "$RUNNER_TEMP/andorra.osm" --overwrite
+      - name: Probe pair bound
         run: |
           set -euo pipefail
           out=artifacts/pair-lb
@@ -49,26 +44,24 @@ jobs:
           cp internal/search/acbs.go "$out/materialized/"
           cp internal/search/search.go "$out/materialized/"
           cp internal/search/acbs_pair_bound_test.go "$out/materialized/"
-          for region in andorra luxembourg bremen; do
-            for metric in distance time; do
-              graph="$RUNNER_TEMP/$region-$metric.aegis"
-              "$RUNNER_TEMP/aegis" import-osm \
-                --input "$RUNNER_TEMP/$region.osm" \
-                --output "$graph" \
-                --profile car \
-                --metric "$metric"
-              run_dir="$out/$region-$metric/seed-1010"
-              mkdir -p "$run_dir"
-              "$RUNNER_TEMP/aegis" benchmark \
-                --graph "$graph" \
-                --queries 100 \
-                --repeats 1 \
-                --order interleaved \
-                --suite mixed \
-                --seed 1010 \
-                --algorithms aegis,aegis-entropic \
-                --output "$run_dir/report.json"
-            done
+          for metric in distance time; do
+            graph="$RUNNER_TEMP/andorra-$metric.aegis"
+            "$RUNNER_TEMP/aegis" import-osm \
+              --input "$RUNNER_TEMP/andorra.osm" \
+              --output "$graph" \
+              --profile car \
+              --metric "$metric"
+            run_dir="$out/andorra-$metric/seed-1010"
+            mkdir -p "$run_dir"
+            "$RUNNER_TEMP/aegis" benchmark \
+              --graph "$graph" \
+              --queries 50 \
+              --repeats 1 \
+              --order interleaved \
+              --suite mixed \
+              --seed 1010 \
+              --algorithms aegis,aegis-entropic \
+              --output "$run_dir/report.json"
           done
       - uses: actions/upload-artifact@v6
         with:
