@@ -1,0 +1,62 @@
+name: Entropic scheduler regional evaluation
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  regional:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Install Osmium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osmium-tool
+      - name: Build
+        run: go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Download and convert regional extracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A urls=(
+            [liechtenstein]="https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf"
+            [andorra]="https://download.geofabrik.de/europe/andorra-latest.osm.pbf"
+            [monaco]="https://download.geofabrik.de/europe/monaco-latest.osm.pbf"
+          )
+          for region in liechtenstein andorra monaco; do
+            curl -fsSL --retry 3 "${urls[$region]}" -o "$RUNNER_TEMP/$region.osm.pbf"
+            osmium cat "$RUNNER_TEMP/$region.osm.pbf" -o "$RUNNER_TEMP/$region.osm" --overwrite
+          done
+      - name: Import and benchmark
+        shell: bash
+        env:
+          QUERIES: '1000'
+          REPEATS: '3'
+          SEEDS: '1010 424242'
+        run: |
+          set -euo pipefail
+          for region in liechtenstein andorra monaco; do
+            for metric in distance time; do
+              graph="$RUNNER_TEMP/$region-$metric.aegis"
+              "$RUNNER_TEMP/aegis" import-osm \
+                --input "$RUNNER_TEMP/$region.osm" \
+                --output "$graph" \
+                --profile car \
+                --metric "$metric"
+              scripts/benchmark-entropic.sh "$graph" "artifacts/$region-$metric"
+            done
+          done
+      - name: Upload reports
+        uses: actions/upload-artifact@v6
+        with:
+          name: entropic-regional-reports
+          path: artifacts/*
+          if-no-files-found: error
