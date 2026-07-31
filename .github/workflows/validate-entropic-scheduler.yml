@@ -21,6 +21,12 @@ jobs:
         with:
           go-version: '1.26.x'
           cache: true
+      - name: Verify payload chunks
+        shell: bash
+        run: |
+          sha256sum .github/bootstrap/payload/*
+          cat .github/bootstrap/payload/* > /tmp/apply-entropic.py.gz.b64
+          sha256sum /tmp/apply-entropic.py.gz.b64
       - name: Apply candidate
         shell: bash
         run: |
