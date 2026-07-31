@@ -18,6 +18,18 @@ jobs:
         with:
           go-version: '1.23.x'
           cache: true
+      - name: Align materializer with CLI signature
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("scripts/materialize_metric_alt.py")
+          text = path.read_text()
+          old = "func resolve(g *graph.Graph, value string) (int, error) {"
+          new = "func resolve(g *graph.Graph, s string) (int, error) {"
+          if text.count(old) != 2:
+              raise SystemExit(f"expected two resolve signature literals, found {text.count(old)}")
+          path.write_text(text.replace(old, new))
+          PY
       - name: Materialize sources
         run: |
           python3 scripts/materialize_metric_alt.py
