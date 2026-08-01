@@ -21,9 +21,11 @@ jobs:
           python3 scripts/materialize_metric_alt_layout_sweep.py
           python3 scripts/materialize_astar_alt_baseline.py
           python3 scripts/materialize_directed_alt_baseline.py
+          python3 scripts/materialize_directed_alt_layout_sweep.py
           python3 scripts/materialize_metric_alt_pure_sweep.py
           python3 scripts/fix_metric_alt_pure_constructor.py
           python3 scripts/materialize_metric_alt_gate_sweep.py
+          python3 scripts/fix_directed_alt_cli_preparation.py
           gofmt -w cmd/aegis/main.go internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go internal/search/astar_alt.go internal/search/directed_alt.go internal/search/directed_alt_test.go internal/search/metric_alt_pure_test.go internal/search/metric_alt_gate_test.go
       - name: Validate
         run: |
@@ -77,7 +79,7 @@ jobs:
               --order interleaved \
               --suite mixed \
               --seed "$seed" \
-              --algorithms dijkstra,bidijkstra,astar,astar-alt,astar-directed-alt,portfolio,aegis,aegis-alt,aegis-alt-pure-top2,aegis-alt-gate50,aegis-alt-gate75,aegis-alt-gate100,aegis-alt-gate125 \
+              --algorithms dijkstra,bidijkstra,astar,astar-alt,astar-directed-alt,astar-directed-alt-top4,astar-directed-alt-top2,portfolio,aegis,aegis-alt,aegis-alt-pure-top2,aegis-alt-gate50,aegis-alt-gate75,aegis-alt-gate100,aegis-alt-gate125 \
               --output "$run_dir/report.json" \
               --html "" \
               2> >(tee "$run_dir/preprocess.log" >&2)
