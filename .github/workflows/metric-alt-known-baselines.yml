@@ -20,7 +20,8 @@ jobs:
         run: |
           python3 scripts/materialize_metric_alt_layout_sweep.py
           python3 scripts/materialize_astar_alt_baseline.py
-          gofmt -w internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go internal/search/astar_alt.go
+          python3 scripts/materialize_directed_alt_baseline.py
+          gofmt -w cmd/aegis/main.go internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go internal/search/astar_alt.go internal/search/directed_alt.go internal/search/directed_alt_test.go
       - name: Validate
         run: |
           git diff --check
@@ -68,7 +69,7 @@ jobs:
                   --order rotated \
                   --suite mixed \
                   --seed "$seed" \
-                  --algorithms dijkstra,bidijkstra,astar,astar-alt,portfolio,aegis,aegis-alt,aegis-alt-top4,aegis-alt-top2 \
+                  --algorithms dijkstra,bidijkstra,astar,astar-alt,astar-directed-alt,portfolio,aegis,aegis-alt,aegis-alt-top4,aegis-alt-top2 \
                   --output "$run_dir/report.json" \
                   --html "" \
                   2> >(tee "$run_dir/preprocess.log" >&2)
