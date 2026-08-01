@@ -3,6 +3,10 @@ name: Metric ALT gate sweep
 on:
   pull_request:
 
+concurrency:
+  group: metric-alt-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
