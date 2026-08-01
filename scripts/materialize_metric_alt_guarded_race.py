@@ -17,10 +17,7 @@ import (
 	"github.com/lasder-ca/aegis-acbs/internal/graph"
 )
 
-const (
-	metricALTRaceLocalRatio = 0.05
-	metricALTRaceMaxEdges   = 400_000
-)
+const metricALTRaceLocalRatio = 0.05
 
 type metricALTRaceResult struct {
 	result Result
@@ -28,16 +25,16 @@ type metricALTRaceResult struct {
 }
 
 // acbsMetricALTGuardedRace is an exact latency portfolio. It avoids goroutine
-// overhead on tiny/local queries and avoids ALT memory traffic on large graphs.
-// For the remaining query region, production ACBS and four-active-landmark
-// ACBS run concurrently; the first successful exact result cancels the other.
+// overhead on tiny/local queries. For the remaining query region, production
+// ACBS and four-active-landmark ACBS run concurrently; the first successful
+// exact result cancels the other.
 //
 // This optimizes latency rather than total CPU work and is therefore exposed as
 // an explicit research algorithm, never as the default production path.
 func acbsMetricALTGuardedRace(
 	ctx context.Context, g *graph.Graph, source, target int,
 ) (Result, error) {
-	if g.EdgeCount >= metricALTRaceMaxEdges || g.EdgeCount < metricALTMinimumEdges {
+	if g.EdgeCount < metricALTMinimumEdges {
 		return metricALTRaceSingle(ctx, g, source, target, Aegis)
 	}
 
@@ -168,9 +165,8 @@ func TestMetricALTGuardedRaceRemainsExact(t *testing.T) {
 	}
 }
 
-func TestMetricALTGuardedRaceLargeGraphUsesProduction(t *testing.T) {
+func TestMetricALTGuardedRaceTinyGraphUsesProduction(t *testing.T) {
 	g := gridGraph(t, 12, 12, true)
-	g.EdgeCount = metricALTRaceMaxEdges
 	result, err := Run(context.Background(), g, 0, len(g.Nodes)-1, AegisALTGuardedRace)
 	if err != nil {
 		t.Fatal(err)
