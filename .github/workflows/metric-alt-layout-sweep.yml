@@ -21,7 +21,8 @@ jobs:
           python3 scripts/materialize_metric_alt_layout_sweep.py
           python3 scripts/materialize_metric_alt_pure_sweep.py
           python3 scripts/fix_metric_alt_pure_constructor.py
-          gofmt -w internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go internal/search/metric_alt_pure_test.go
+          python3 scripts/fix_metric_alt_cli_preparation.py
+          gofmt -w cmd/aegis/main.go internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go internal/search/metric_alt_pure_test.go
       - name: Validate
         run: |
           git diff --check
