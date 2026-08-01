@@ -133,7 +133,7 @@ func RunStress(parent context.Context, g *graph.Graph, cfg StressConfig) (Stress
 		}()
 	}
 	wg.Wait()
-	wall := time.Since(started)
+	wallNS := measuredStressNanoseconds(time.Since(started))
 
 	valid := durations[:0]
 	var total int64
@@ -149,11 +149,9 @@ func RunStress(parent context.Context, g *graph.Graph, cfg StressConfig) (Stress
 		GraphSource: g.Source, Nodes: len(g.Nodes), Edges: g.EdgeCount, Metric: g.Metric,
 		Config: cfg, Completed: int(completed.Load()), Reachable: int(reachable.Load()),
 		Verified: int(verified.Load()), Correct: int(correct.Load()), Errors: int(failures.Load()),
-		WallDurationNS: wall.Nanoseconds(), Memory: captureMemorySummary(),
+		WallDurationNS: wallNS, Memory: captureMemorySummary(),
 	}
-	if wall > 0 {
-		report.ThroughputQPS = float64(report.Completed) / wall.Seconds()
-	}
+	report.ThroughputQPS = float64(report.Completed) * float64(time.Second) / float64(wallNS)
 	if len(valid) > 0 {
 		report.MeanNS = total / int64(len(valid))
 		report.MedianNS = percentileInt64(valid, .5)
@@ -166,6 +164,14 @@ func RunStress(parent context.Context, g *graph.Graph, cfg StressConfig) (Stress
 		return report, parent.Err()
 	}
 	return report, nil
+}
+
+func measuredStressNanoseconds(duration time.Duration) int64 {
+	nanoseconds := duration.Nanoseconds()
+	if nanoseconds < 1 {
+		return 1
+	}
+	return nanoseconds
 }
 
 func WriteStressJSON(path string, report StressReport) error {

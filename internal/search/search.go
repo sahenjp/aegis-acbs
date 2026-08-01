@@ -154,8 +154,16 @@ func Run(ctx context.Context, g *graph.Graph, source, target int, alg Algorithm)
 	default:
 		return Result{}, fmt.Errorf("unknown algorithm %q", alg)
 	}
-	r.Stats.DurationNS = time.Since(started).Nanoseconds()
+	r.Stats.DurationNS = measuredNanoseconds(time.Since(started))
 	return r, err
+}
+
+func measuredNanoseconds(duration time.Duration) int64 {
+	nanoseconds := duration.Nanoseconds()
+	if nanoseconds < 1 {
+		return 1
+	}
+	return nanoseconds
 }
 
 // Select returns the exact core algorithm chosen by the allocation-free road policy.
