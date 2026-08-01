@@ -3,6 +3,10 @@ name: Metric ALT Tokyo validation
 on:
   pull_request:
 
+concurrency:
+  group: metric-alt-tokyo-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
