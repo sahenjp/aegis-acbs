@@ -19,7 +19,8 @@ jobs:
       - name: Materialize cache-local candidates
         run: |
           python3 scripts/materialize_metric_alt_layout_sweep.py
-          gofmt -w internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go
+          python3 scripts/materialize_metric_alt_pure_sweep.py
+          gofmt -w internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go internal/search/metric_alt_pure_test.go
       - name: Validate
         run: |
           git diff --check
@@ -69,7 +70,7 @@ jobs:
                   --order interleaved \
                   --suite mixed \
                   --seed "$seed" \
-                  --algorithms aegis,aegis-alt,aegis-alt-top4,aegis-alt-top2 \
+                  --algorithms aegis,aegis-alt-top2,aegis-alt-pure,aegis-alt-pure-top2 \
                   --output "$run_dir/report.json" \
                   --html "" \
                   2> >(tee "$run_dir/preprocess.log" >&2)
