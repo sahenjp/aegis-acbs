@@ -24,16 +24,18 @@ jobs:
         run: |
           python3 scripts/materialize_metric_alt_layout_sweep.py
           python3 scripts/materialize_metric_alt_static_baseline.py
+          python3 scripts/materialize_metric_alt_guarded_race.py
           python3 scripts/materialize_astar_alt_baseline.py
           python3 scripts/materialize_directed_alt_baseline.py
           python3 scripts/materialize_directed_alt_layout_sweep.py
           python3 scripts/fix_directed_alt_cli_preparation.py
-          gofmt -w cmd/aegis/main.go internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go internal/search/metric_alt_static_test.go internal/search/astar_alt.go internal/search/directed_alt.go internal/search/directed_alt_test.go
+          gofmt -w cmd/aegis/main.go internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go internal/search/metric_alt_static_test.go internal/search/metric_alt_race.go internal/search/metric_alt_race_test.go internal/search/astar_alt.go internal/search/directed_alt.go internal/search/directed_alt_test.go
       - name: Validate
         run: |
           git diff --check
           go test ./...
           go vet ./...
+          go test -race ./internal/search ./internal/graph ./internal/bench ./internal/server
           go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
       - name: Install Osmium
         run: |
@@ -76,7 +78,7 @@ jobs:
                   --order rotated \
                   --suite mixed \
                   --seed "$seed" \
-                  --algorithms dijkstra,bidijkstra,astar,astar-alt,astar-directed-alt,astar-directed-alt-top4,astar-directed-alt-top2,portfolio,aegis,aegis-alt-static,aegis-alt,aegis-alt-top4,aegis-alt-top2 \
+                  --algorithms dijkstra,bidijkstra,astar,astar-alt,astar-directed-alt,astar-directed-alt-top4,astar-directed-alt-top2,portfolio,aegis-race,aegis,aegis-alt-static,aegis-alt,aegis-alt-top4,aegis-alt-top2,aegis-alt-guarded-race \
                   --output "$run_dir/report.json" \
                   --html "" \
                   2> >(tee "$run_dir/preprocess.log" >&2)
