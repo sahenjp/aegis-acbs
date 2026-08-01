@@ -86,7 +86,7 @@ func TestMetricALTStaticSchedulerRemainsExact(t *testing.T) {
 			if got.Stats.Distance != want.Stats.Distance || got.Stats.OptimalityGap != 0 {
 				t.Fatalf("%d -> %d: got=%+v want=%+v", source, target, got.Stats, want.Stats)
 			}
-			if got.Stats.SchedulerVersion != "static-edge-budget-v1" {
+			if got.Stats.SchedulerVersion != "lower-key-static-v2" {
 				t.Fatalf("unexpected scheduler: %+v", got.Stats)
 			}
 		}
