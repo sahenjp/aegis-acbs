@@ -1,0 +1,92 @@
+name: Metric ALT bank sweep
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Materialize bank candidates
+        run: |
+          python3 scripts/materialize_metric_alt_layout_sweep.py
+          python3 scripts/materialize_metric_alt_bank_sweep.py
+          python3 scripts/fix_metric_alt_cli_preparation.py
+          gofmt -w cmd/aegis/main.go internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go
+      - name: Validate
+        run: |
+          git diff --check
+          go test ./...
+          go vet ./...
+          go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Install Osmium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osmium-tool
+      - name: Download extracts
+        run: |
+          set -euo pipefail
+          download() {
+            local name=$1
+            local url=$2
+            local pbf="$RUNNER_TEMP/$name.osm.pbf"
+            curl -fL --retry 6 --retry-all-errors --retry-delay 2 "$url" -o "$pbf"
+            osmium fileinfo "$pbf" >/dev/null
+            osmium cat "$pbf" -o "$RUNNER_TEMP/$name.osm" --overwrite
+          }
+          download bremen https://download.geofabrik.de/europe/germany/bremen-latest.osm.pbf
+          download luxembourg https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf
+      - name: Build graphs
+        run: |
+          set -euo pipefail
+          for region in bremen luxembourg; do
+            for metric in distance time; do
+              "$RUNNER_TEMP/aegis" import-osm \
+                --input "$RUNNER_TEMP/$region.osm" \
+                --output "$RUNNER_TEMP/$region-$metric.aegis" \
+                --profile car \
+                --metric "$metric"
+            done
+          done
+      - name: Benchmark landmark banks
+        run: |
+          set -euo pipefail
+          out=artifacts/metric-alt-banks
+          mkdir -p "$out"
+          for landmarks in 8 16 32; do
+            for region in bremen luxembourg; do
+              for metric in distance time; do
+                graph="$RUNNER_TEMP/$region-$metric.aegis"
+                for seed in 1010 424242 20260717; do
+                  run_dir="$out/k$landmarks/$region-$metric/seed-$seed"
+                  mkdir -p "$run_dir"
+                  AEGIS_ALT_LANDMARKS="$landmarks" \
+                    "$RUNNER_TEMP/aegis" benchmark \
+                    --graph "$graph" \
+                    --queries 300 \
+                    --repeats 1 \
+                    --order interleaved \
+                    --suite mixed \
+                    --seed "$seed" \
+                    --algorithms aegis,aegis-alt-top4,aegis-alt-top2 \
+                    --output "$run_dir/report.json" \
+                    --html "" \
+                    2> >(tee "$run_dir/preprocess.log" >&2)
+                done
+              done
+            done
+          done
+      - uses: actions/upload-artifact@v6
+        with:
+          name: metric-alt-bank-sweep
+          path: artifacts/metric-alt-banks
+          if-no-files-found: error
