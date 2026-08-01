@@ -1,0 +1,94 @@
+name: Metric ALT Tokyo promotion gate
+
+on:
+  pull_request:
+    paths:
+      - 'internal/search/**'
+      - 'internal/bench/**'
+      - 'cmd/aegis/**'
+      - 'scripts/**'
+      - '.github/workflows/metric-alt-tokyo-gate-pr.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    name: tokyo-repeat-${{ matrix.repeat }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        repeat: [1, 2]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Install Osmium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osmium-tool
+      - name: Record runner metadata
+        run: |
+          mkdir -p artifacts/metric-alt-tokyo/repeat-${{ matrix.repeat }}
+          {
+            echo "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            uname -a
+            lscpu
+            free -h
+            go version
+          } > artifacts/metric-alt-tokyo/repeat-${{ matrix.repeat }}/hardware.txt
+      - name: Build
+        run: go build -trimpath -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Download Kanto extract
+        run: |
+          set -euo pipefail
+          pbf="$RUNNER_TEMP/kanto.osm.pbf"
+          curl -fL --retry 6 --retry-all-errors --retry-delay 3 \
+            https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
+            -o "$pbf"
+          osmium fileinfo "$pbf"
+          osmium cat "$pbf" -o "$RUNNER_TEMP/kanto.osm" --overwrite
+      - name: Benchmark Tokyo-scale graph
+        run: |
+          set -euo pipefail
+          root="artifacts/metric-alt-tokyo/repeat-${{ matrix.repeat }}"
+          for metric in distance time; do
+            graph="$RUNNER_TEMP/kanto-$metric.aegis"
+            /usr/bin/time -v "$RUNNER_TEMP/aegis" import-osm \
+              --input "$RUNNER_TEMP/kanto.osm" \
+              --output "$graph" \
+              --profile car \
+              --metric "$metric" \
+              2> "$root/import-$metric.log"
+            "$RUNNER_TEMP/aegis" inspect --graph "$graph" \
+              > "$root/graph-$metric.json"
+            for seed in 1010 424242 20260717; do
+              run_dir="$root/$metric/seed-$seed"
+              mkdir -p "$run_dir"
+              /usr/bin/time -v "$RUNNER_TEMP/aegis" benchmark \
+                --graph "$graph" \
+                --queries 2000 \
+                --repeats 1 \
+                --order interleaved \
+                --suite mixed \
+                --seed "$seed" \
+                --algorithms dijkstra,bidijkstra,astar,aegis,aegis-alt \
+                --measure-memory \
+                --output "$run_dir/report.json" \
+                --html "" \
+                2> >(tee "$run_dir/preprocess-and-resource.log" >&2)
+            done
+          done
+      - uses: actions/upload-artifact@v6
+        with:
+          name: metric-alt-tokyo-repeat-${{ matrix.repeat }}
+          path: artifacts/metric-alt-tokyo/repeat-${{ matrix.repeat }}
+          if-no-files-found: error
+          retention-days: 30
