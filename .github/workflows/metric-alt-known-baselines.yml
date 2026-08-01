@@ -22,6 +22,7 @@ jobs:
           python3 scripts/materialize_astar_alt_baseline.py
           python3 scripts/materialize_directed_alt_baseline.py
           python3 scripts/materialize_directed_alt_layout_sweep.py
+          python3 scripts/fix_directed_alt_cli_preparation.py
           gofmt -w cmd/aegis/main.go internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go internal/search/astar_alt.go internal/search/directed_alt.go internal/search/directed_alt_test.go
       - name: Validate
         run: |
