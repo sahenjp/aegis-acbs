@@ -15,13 +15,17 @@ permissions:
 
 jobs:
   evaluate:
-    name: tokyo-repeat-${{ matrix.repeat }}
+    name: tokyo-r${{ matrix.repeat }}-${{ matrix.metric }}-s${{ matrix.base_seed }}-p${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 150
     strategy:
       fail-fast: false
+      max-parallel: 8
       matrix:
         repeat: [1, 2]
+        metric: [distance, time]
+        base_seed: [1010, 424242, 20260717]
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -32,18 +36,31 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends osmium-tool
-      - name: Record runner metadata
+      - name: Define run metadata
+        id: meta
+        shell: bash
         run: |
-          mkdir -p artifacts/metric-alt-tokyo/repeat-${{ matrix.repeat }}
+          set -euo pipefail
+          seed=$(( ${{ matrix.base_seed }} + ${{ matrix.shard }} * 1000003 ))
+          root="artifacts/metric-alt-tokyo/repeat-${{ matrix.repeat }}/${{ matrix.metric }}/base-${{ matrix.base_seed }}/shard-${{ matrix.shard }}"
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          mkdir -p "$root"
           {
             echo "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "runner_os=$RUNNER_OS"
             echo "runner_arch=$RUNNER_ARCH"
+            echo "repeat=${{ matrix.repeat }}"
+            echo "metric=${{ matrix.metric }}"
+            echo "base_seed=${{ matrix.base_seed }}"
+            echo "shard=${{ matrix.shard }}"
+            echo "effective_seed=$seed"
+            echo "queries=1000"
             uname -a
             lscpu
             free -h
             go version
-          } > artifacts/metric-alt-tokyo/repeat-${{ matrix.repeat }}/hardware.txt
+          } > "$root/hardware.txt"
       - name: Build
         run: go build -trimpath -o "$RUNNER_TEMP/aegis" ./cmd/aegis
       - name: Download Kanto extract
@@ -53,42 +70,41 @@ jobs:
           curl -fL --retry 6 --retry-all-errors --retry-delay 3 \
             https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
             -o "$pbf"
-          osmium fileinfo "$pbf"
+          osmium fileinfo "$pbf" > "${{ steps.meta.outputs.root }}/source-pbf.txt"
           osmium cat "$pbf" -o "$RUNNER_TEMP/kanto.osm" --overwrite
-      - name: Benchmark Tokyo-scale graph
+      - name: Import Tokyo-scale graph
         run: |
           set -euo pipefail
-          root="artifacts/metric-alt-tokyo/repeat-${{ matrix.repeat }}"
-          for metric in distance time; do
-            graph="$RUNNER_TEMP/kanto-$metric.aegis"
-            /usr/bin/time -v "$RUNNER_TEMP/aegis" import-osm \
-              --input "$RUNNER_TEMP/kanto.osm" \
-              --output "$graph" \
-              --profile car \
-              --metric "$metric" \
-              2> "$root/import-$metric.log"
-            "$RUNNER_TEMP/aegis" inspect --graph "$graph" \
-              > "$root/graph-$metric.json"
-            for seed in 1010 424242 20260717; do
-              run_dir="$root/$metric/seed-$seed"
-              mkdir -p "$run_dir"
-              /usr/bin/time -v "$RUNNER_TEMP/aegis" benchmark \
-                --graph "$graph" \
-                --queries 2000 \
-                --repeats 1 \
-                --order interleaved \
-                --suite mixed \
-                --seed "$seed" \
-                --algorithms dijkstra,bidijkstra,astar,aegis,aegis-alt \
-                --measure-memory \
-                --output "$run_dir/report.json" \
-                --html "" \
-                2> >(tee "$run_dir/preprocess-and-resource.log" >&2)
-            done
-          done
-      - uses: actions/upload-artifact@v6
+          graph="$RUNNER_TEMP/kanto-${{ matrix.metric }}.aegis"
+          /usr/bin/time -v "$RUNNER_TEMP/aegis" import-osm \
+            --input "$RUNNER_TEMP/kanto.osm" \
+            --output "$graph" \
+            --profile car \
+            --metric "${{ matrix.metric }}" \
+            2> "${{ steps.meta.outputs.root }}/import.log"
+          "$RUNNER_TEMP/aegis" inspect --graph "$graph" \
+            > "${{ steps.meta.outputs.root }}/graph.json"
+      - name: Benchmark shard
+        run: |
+          set -euo pipefail
+          graph="$RUNNER_TEMP/kanto-${{ matrix.metric }}.aegis"
+          /usr/bin/time -v "$RUNNER_TEMP/aegis" benchmark \
+            --graph "$graph" \
+            --queries 1000 \
+            --repeats 1 \
+            --order interleaved \
+            --suite mixed \
+            --seed "${{ steps.meta.outputs.seed }}" \
+            --algorithms dijkstra,bidijkstra,astar,aegis,aegis-alt \
+            --measure-memory \
+            --output "${{ steps.meta.outputs.root }}/report.json" \
+            --html "" \
+            2> >(tee "${{ steps.meta.outputs.root }}/preprocess-and-resource.log" >&2)
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v6
         with:
-          name: metric-alt-tokyo-repeat-${{ matrix.repeat }}
-          path: artifacts/metric-alt-tokyo/repeat-${{ matrix.repeat }}
+          name: metric-alt-tokyo-r${{ matrix.repeat }}-${{ matrix.metric }}-s${{ matrix.base_seed }}-p${{ matrix.shard }}
+          path: ${{ steps.meta.outputs.root }}
           if-no-files-found: error
           retention-days: 30
