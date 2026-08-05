@@ -14,10 +14,85 @@ permissions:
   contents: read
 
 jobs:
-  evaluate:
-    name: tokyo-r${{ matrix.repeat }}-${{ matrix.metric }}-s${{ matrix.base_seed }}-p${{ matrix.shard }}
+  prepare:
+    name: prepare-tokyo-${{ matrix.metric }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        metric: [distance, time]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Install Osmium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osmium-tool
+      - name: Build
+        run: go build -trimpath -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Download and extract fixed Tokyo region
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p prepared
+          pbf="$RUNNER_TEMP/kanto.osm.pbf"
+          tokyo_pbf="$RUNNER_TEMP/tokyo-fixed.osm.pbf"
+          curl -fL --retry 6 --retry-all-errors --retry-delay 3 \
+            https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
+            -o "$pbf"
+          osmium fileinfo "$pbf" > prepared/source-pbf.txt
+          # Fixed Greater Tokyo bounding box. Keep the bounds in metadata so every
+          # run is independently reproducible even when the upstream PBF changes.
+          bounds='138.85,35.20,140.10,36.10'
+          printf 'bounds=%s\n' "$bounds" > prepared/extract.txt
+          /usr/bin/time -v osmium extract \
+            --strategy complete_ways \
+            --bbox "$bounds" \
+            "$pbf" -o "$tokyo_pbf" --overwrite \
+            2> prepared/extract-resource.log
+          osmium fileinfo "$tokyo_pbf" >> prepared/extract.txt
+          osmium cat "$tokyo_pbf" -o "$RUNNER_TEMP/tokyo-fixed.osm" --overwrite
+      - name: Import graph once
+        shell: bash
+        run: |
+          set -euo pipefail
+          graph="prepared/tokyo-${{ matrix.metric }}.aegis"
+          /usr/bin/time -v "$RUNNER_TEMP/aegis" import-osm \
+            --input "$RUNNER_TEMP/tokyo-fixed.osm" \
+            --output "$graph" \
+            --profile car \
+            --metric "${{ matrix.metric }}" \
+            2> prepared/import-resource.log
+          "$RUNNER_TEMP/aegis" inspect --graph "$graph" > prepared/graph.json
+          {
+            echo "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "metric=${{ matrix.metric }}"
+            uname -a
+            lscpu
+            free -h
+            go version
+          } > prepared/hardware.txt
+          sha256sum "$graph" > prepared/graph.sha256
+      - name: Upload prepared graph
+        uses: actions/upload-artifact@v6
+        with:
+          name: metric-alt-tokyo-graph-${{ matrix.metric }}
+          path: prepared
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 1
+
+  evaluate:
+    name: tokyo-r${{ matrix.repeat }}-${{ matrix.metric }}-s${{ matrix.base_seed }}-p${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       max-parallel: 8
@@ -32,10 +107,13 @@ jobs:
         with:
           go-version: '1.23.x'
           cache: true
-      - name: Install Osmium
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends osmium-tool
+      - name: Build
+        run: go build -trimpath -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Download prepared graph
+        uses: actions/download-artifact@v6
+        with:
+          name: metric-alt-tokyo-graph-${{ matrix.metric }}
+          path: prepared
       - name: Define run metadata
         id: meta
         shell: bash
@@ -46,6 +124,7 @@ jobs:
           echo "seed=$seed" >> "$GITHUB_OUTPUT"
           echo "root=$root" >> "$GITHUB_OUTPUT"
           mkdir -p "$root"
+          cp prepared/{source-pbf.txt,extract.txt,extract-resource.log,import-resource.log,graph.json,graph.sha256} "$root/"
           {
             echo "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "runner_os=$RUNNER_OS"
@@ -61,33 +140,12 @@ jobs:
             free -h
             go version
           } > "$root/hardware.txt"
-      - name: Build
-        run: go build -trimpath -o "$RUNNER_TEMP/aegis" ./cmd/aegis
-      - name: Download Kanto extract
-        run: |
-          set -euo pipefail
-          pbf="$RUNNER_TEMP/kanto.osm.pbf"
-          curl -fL --retry 6 --retry-all-errors --retry-delay 3 \
-            https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
-            -o "$pbf"
-          osmium fileinfo "$pbf" > "${{ steps.meta.outputs.root }}/source-pbf.txt"
-          osmium cat "$pbf" -o "$RUNNER_TEMP/kanto.osm" --overwrite
-      - name: Import Tokyo-scale graph
-        run: |
-          set -euo pipefail
-          graph="$RUNNER_TEMP/kanto-${{ matrix.metric }}.aegis"
-          /usr/bin/time -v "$RUNNER_TEMP/aegis" import-osm \
-            --input "$RUNNER_TEMP/kanto.osm" \
-            --output "$graph" \
-            --profile car \
-            --metric "${{ matrix.metric }}" \
-            2> "${{ steps.meta.outputs.root }}/import.log"
-          "$RUNNER_TEMP/aegis" inspect --graph "$graph" \
-            > "${{ steps.meta.outputs.root }}/graph.json"
+          sha256sum -c prepared/graph.sha256
       - name: Benchmark shard
+        shell: bash
         run: |
           set -euo pipefail
-          graph="$RUNNER_TEMP/kanto-${{ matrix.metric }}.aegis"
+          graph="prepared/tokyo-${{ matrix.metric }}.aegis"
           /usr/bin/time -v "$RUNNER_TEMP/aegis" benchmark \
             --graph "$graph" \
             --queries 1000 \
