@@ -45,8 +45,6 @@ jobs:
             https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
             -o "$pbf"
           osmium fileinfo "$pbf" > prepared/source-pbf.txt
-          # Fixed Greater Tokyo bounding box. Keep the bounds in metadata so every
-          # run is independently reproducible even when the upstream PBF changes.
           bounds='138.85,35.20,140.10,36.10'
           printf 'bounds=%s\n' "$bounds" > prepared/extract.txt
           /usr/bin/time -v osmium extract \
@@ -166,3 +164,35 @@ jobs:
           path: ${{ steps.meta.outputs.root }}
           if-no-files-found: error
           retention-days: 30
+
+  aggregate:
+    name: machine-check-tokyo-subgate
+    needs: evaluate
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download all benchmark shards
+        uses: actions/download-artifact@v6
+        with:
+          pattern: metric-alt-tokyo-r*
+          path: downloaded
+      - name: Evaluate exactness, speedup, and tails
+        id: gate
+        continue-on-error: true
+        run: |
+          python3 scripts/evaluate_metric_alt_gate.py downloaded \
+            --output metric-alt-tokyo-gate.json
+      - name: Publish machine-readable gate report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: metric-alt-tokyo-gate-report
+          path: metric-alt-tokyo-gate.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce subgate
+        if: steps.gate.outcome != 'success'
+        run: |
+          echo 'Metric ALT failed the Tokyo large-graph subgate.' >&2
+          exit 1
