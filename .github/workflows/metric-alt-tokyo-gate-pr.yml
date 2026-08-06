@@ -1,0 +1,198 @@
+name: Metric ALT Tokyo promotion gate
+
+on:
+  pull_request:
+    paths:
+      - 'internal/search/**'
+      - 'internal/bench/**'
+      - 'cmd/aegis/**'
+      - 'scripts/**'
+      - '.github/workflows/metric-alt-tokyo-gate-pr.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: prepare-tokyo-${{ matrix.metric }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        metric: [distance, time]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Install Osmium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osmium-tool
+      - name: Build
+        run: go build -trimpath -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Download and extract fixed Tokyo region
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p prepared
+          pbf="$RUNNER_TEMP/kanto.osm.pbf"
+          tokyo_pbf="$RUNNER_TEMP/tokyo-fixed.osm.pbf"
+          curl -fL --retry 6 --retry-all-errors --retry-delay 3 \
+            https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
+            -o "$pbf"
+          osmium fileinfo "$pbf" > prepared/source-pbf.txt
+          bounds='138.85,35.20,140.10,36.10'
+          printf 'bounds=%s\n' "$bounds" > prepared/extract.txt
+          /usr/bin/time -v osmium extract \
+            --strategy complete_ways \
+            --bbox "$bounds" \
+            "$pbf" -o "$tokyo_pbf" --overwrite \
+            2> prepared/extract-resource.log
+          osmium fileinfo "$tokyo_pbf" >> prepared/extract.txt
+          osmium cat "$tokyo_pbf" -o "$RUNNER_TEMP/tokyo-fixed.osm" --overwrite
+      - name: Import graph once
+        shell: bash
+        run: |
+          set -euo pipefail
+          graph="prepared/tokyo-${{ matrix.metric }}.aegis"
+          /usr/bin/time -v "$RUNNER_TEMP/aegis" import-osm \
+            --input "$RUNNER_TEMP/tokyo-fixed.osm" \
+            --output "$graph" \
+            --profile car \
+            --metric "${{ matrix.metric }}" \
+            2> prepared/import-resource.log
+          "$RUNNER_TEMP/aegis" inspect --graph "$graph" > prepared/graph.json
+          {
+            echo "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "metric=${{ matrix.metric }}"
+            uname -a
+            lscpu
+            free -h
+            go version
+          } > prepared/hardware.txt
+          sha256sum "$graph" > prepared/graph.sha256
+      - name: Upload prepared graph
+        uses: actions/upload-artifact@v6
+        with:
+          name: metric-alt-tokyo-graph-${{ matrix.metric }}
+          path: prepared
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 1
+
+  evaluate:
+    name: tokyo-r${{ matrix.repeat }}-${{ matrix.metric }}-s${{ matrix.base_seed }}-p${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        repeat: [1, 2]
+        metric: [distance, time]
+        base_seed: [1010, 424242, 20260717]
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Build
+        run: go build -trimpath -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Download prepared graph
+        uses: actions/download-artifact@v6
+        with:
+          name: metric-alt-tokyo-graph-${{ matrix.metric }}
+          path: prepared
+      - name: Define run metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          seed=$(( ${{ matrix.base_seed }} + ${{ matrix.shard }} * 1000003 ))
+          root="artifacts/metric-alt-tokyo/repeat-${{ matrix.repeat }}/${{ matrix.metric }}/base-${{ matrix.base_seed }}/shard-${{ matrix.shard }}"
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          mkdir -p "$root"
+          cp prepared/{source-pbf.txt,extract.txt,extract-resource.log,import-resource.log,graph.json,graph.sha256} "$root/"
+          {
+            echo "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "repeat=${{ matrix.repeat }}"
+            echo "metric=${{ matrix.metric }}"
+            echo "base_seed=${{ matrix.base_seed }}"
+            echo "shard=${{ matrix.shard }}"
+            echo "effective_seed=$seed"
+            echo "queries=1000"
+            uname -a
+            lscpu
+            free -h
+            go version
+          } > "$root/hardware.txt"
+          sha256sum -c prepared/graph.sha256
+      - name: Benchmark shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          graph="prepared/tokyo-${{ matrix.metric }}.aegis"
+          /usr/bin/time -v "$RUNNER_TEMP/aegis" benchmark \
+            --graph "$graph" \
+            --queries 1000 \
+            --repeats 1 \
+            --order interleaved \
+            --suite mixed \
+            --seed "${{ steps.meta.outputs.seed }}" \
+            --algorithms dijkstra,bidijkstra,astar,aegis,aegis-alt \
+            --measure-memory \
+            --output "${{ steps.meta.outputs.root }}/report.json" \
+            --html "" \
+            2> >(tee "${{ steps.meta.outputs.root }}/preprocess-and-resource.log" >&2)
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: metric-alt-tokyo-r${{ matrix.repeat }}-${{ matrix.metric }}-s${{ matrix.base_seed }}-p${{ matrix.shard }}
+          path: ${{ steps.meta.outputs.root }}
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    name: machine-check-tokyo-subgate
+    needs: evaluate
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download all benchmark shards
+        uses: actions/download-artifact@v6
+        with:
+          pattern: metric-alt-tokyo-r*
+          path: downloaded
+      - name: Evaluate exactness, speedup, and tails
+        id: gate
+        continue-on-error: true
+        run: |
+          python3 scripts/evaluate_metric_alt_gate.py downloaded \
+            --output metric-alt-tokyo-gate.json
+      - name: Publish machine-readable gate report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: metric-alt-tokyo-gate-report
+          path: metric-alt-tokyo-gate.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce subgate
+        if: steps.gate.outcome != 'success'
+        run: |
+          echo 'Metric ALT failed the Tokyo large-graph subgate.' >&2
+          exit 1
