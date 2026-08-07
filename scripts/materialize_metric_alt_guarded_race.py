@@ -17,7 +17,12 @@ import (
 	"github.com/lasder-ca/aegis-acbs/internal/graph"
 )
 
-const metricALTRaceLocalRatio = 0.05
+const (
+	metricALTRaceLocalRatio      = 0.05
+	metricALTRaceRegionalRatio   = 0.25
+	metricALTRaceLargeGraphRatio = 0.30
+	metricALTRaceLargeGraphEdges = 1_000_000
+)
 
 type metricALTRaceResult struct {
 	result Result
@@ -25,10 +30,14 @@ type metricALTRaceResult struct {
 }
 
 // acbsMetricALTGuardedRace is an exact latency portfolio. It avoids goroutine
-// overhead on tiny/local queries. For the remaining query region, production
-// ACBS and four-active-landmark ACBS run concurrently; the first successful
-// exact result cancels the other.
+// overhead on tiny/local queries and on long regional queries where the prior
+// race candidate showed tail regressions. For the remaining query region,
+// production ACBS and four-active-landmark ACBS run concurrently; the first
+// successful exact result cancels the other.
 //
+// The upper geometry guard is intentionally conservative: regional graphs use
+// 0.25 of the graph diameter, while million-edge graphs use 0.30 so large-city
+// workloads retain enough race coverage to amortize the portfolio overhead.
 // This optimizes latency rather than total CPU work and is therefore exposed as
 // an explicit research algorithm, never as the default production path.
 func acbsMetricALTGuardedRace(
@@ -45,11 +54,21 @@ func acbsMetricALTGuardedRace(
 		}
 		return metricALTRaceSingle(ctx, g, source, target, AegisALTTop4)
 	}
+	if hasGeography && ratio > metricALTRaceUpperRatio(g) {
+		return metricALTRaceSingle(ctx, g, source, target, Aegis)
+	}
 
 	if _, ok := metricALTForGraph(g); !ok {
 		return Result{}, errMetricALTNotPrepared
 	}
 	return metricALTRacePair(ctx, g, source, target, Aegis, AegisALTTop4)
+}
+
+func metricALTRaceUpperRatio(g *graph.Graph) float64 {
+	if g.EdgeCount >= metricALTRaceLargeGraphEdges {
+		return metricALTRaceLargeGraphRatio
+	}
+	return metricALTRaceRegionalRatio
 }
 
 func metricALTRaceSingle(
@@ -173,6 +192,17 @@ func TestMetricALTGuardedRaceTinyGraphUsesProduction(t *testing.T) {
 	}
 	if result.Stats.Selected != Aegis {
 		t.Fatalf("selected = %s, want %s", result.Stats.Selected, Aegis)
+	}
+}
+
+func TestMetricALTRaceUpperRatio(t *testing.T) {
+	g := &graph.Graph{EdgeCount: metricALTRaceLargeGraphEdges - 1}
+	if got := metricALTRaceUpperRatio(g); got != metricALTRaceRegionalRatio {
+		t.Fatalf("regional upper ratio = %v, want %v", got, metricALTRaceRegionalRatio)
+	}
+	g.EdgeCount = metricALTRaceLargeGraphEdges
+	if got := metricALTRaceUpperRatio(g); got != metricALTRaceLargeGraphRatio {
+		t.Fatalf("large-graph upper ratio = %v, want %v", got, metricALTRaceLargeGraphRatio)
 	}
 }
 ''')
