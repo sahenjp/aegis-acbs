@@ -1,0 +1,119 @@
+name: Metric ALT guarded race v3 evaluation
+
+on:
+  pull_request:
+
+concurrency:
+  group: metric-alt-tail-guard-v3-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    if: github.head_ref == 'research/metric-alt-tail-guard-v3'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [1010, 424242, 20260717]
+        case:
+          - name: andorra-distance
+            kind: region
+            url: https://download.geofabrik.de/europe/andorra-latest.osm.pbf
+            metric: distance
+          - name: bremen-distance
+            kind: region
+            url: https://download.geofabrik.de/europe/germany/bremen-latest.osm.pbf
+            metric: distance
+          - name: luxembourg-distance
+            kind: region
+            url: https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf
+            metric: distance
+          - name: tokyo-time
+            kind: tokyo
+            url: https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf
+            metric: time
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Materialize v3 candidate and exact baselines
+        run: |
+          python3 scripts/materialize_metric_alt_layout_sweep.py
+          python3 scripts/materialize_astar_alt_baseline.py
+          python3 scripts/materialize_metric_alt_static_baseline.py
+          python3 scripts/materialize_metric_alt_guarded_race_v3.py
+          python3 scripts/materialize_directed_alt_baseline.py
+          python3 scripts/materialize_directed_alt_layout_sweep.py
+          python3 scripts/fix_directed_alt_cli_preparation.py
+          gofmt -w cmd/aegis/main.go internal/search/*.go
+          git diff --check
+          go test ./...
+          go vet ./...
+          go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Install Osmium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osmium-tool
+      - name: Build road graph
+        env:
+          URL: ${{ matrix.case.url }}
+          KIND: ${{ matrix.case.kind }}
+          METRIC: ${{ matrix.case.metric }}
+        run: |
+          set -euo pipefail
+          pbf="$RUNNER_TEMP/source.osm.pbf"
+          osm="$RUNNER_TEMP/source.osm"
+          curl -fL --retry 6 --retry-all-errors --retry-delay 3 "$URL" -o "$pbf"
+          osmium fileinfo "$pbf" >/dev/null
+          if [ "$KIND" = tokyo ]; then
+            clipped="$RUNNER_TEMP/tokyo.osm.pbf"
+            osmium extract --bbox 139.45,35.45,140.05,35.90 --strategy complete_ways --overwrite --output "$clipped" "$pbf"
+            pbf="$clipped"
+          fi
+          osmium cat "$pbf" -o "$osm" --overwrite
+          /usr/bin/time -v "$RUNNER_TEMP/aegis" import-osm --input "$osm" --output "$RUNNER_TEMP/graph.aegis" --profile car --metric "$METRIC" 2> import-resource.log
+          "$RUNNER_TEMP/aegis" inspect --graph "$RUNNER_TEMP/graph.aegis" > inspect.json
+      - name: Benchmark v3 against exact baselines
+        env:
+          SEED: ${{ matrix.seed }}
+        run: |
+          set -euo pipefail
+          algorithms=dijkstra,bidijkstra,astar,astar-directed-alt-top4,aegis,aegis-alt-top4,aegis-alt-guarded-race
+          /usr/bin/time -v "$RUNNER_TEMP/aegis" benchmark \
+            --graph "$RUNNER_TEMP/graph.aegis" \
+            --queries 1000 \
+            --repeats 1 \
+            --order interleaved \
+            --suite mixed \
+            --seed "$SEED" \
+            --algorithms "$algorithms" \
+            --output report.json \
+            --html "" \
+            2> benchmark-resource.log
+      - name: Record runner metadata
+        run: |
+          {
+            echo "date_utc=$(date -u +%FT%TZ)"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "kernel=$(uname -srvmo)"
+            echo "go=$(go version)"
+            echo "cpu=$(lscpu | tr '\n' ';')"
+            echo "memory=$(free -h | tr '\n' ';')"
+          } > environment.txt
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: v3-${{ matrix.case.name }}-seed-${{ matrix.seed }}
+          path: |
+            report.json
+            inspect.json
+            import-resource.log
+            benchmark-resource.log
+            environment.txt
+          if-no-files-found: warn
