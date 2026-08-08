@@ -79,7 +79,7 @@ jobs:
       - name: Benchmark exact candidates
         run: |
           set -euo pipefail
-          algorithms=dijkstra,bidijkstra,astar,aegis,aegis-alt-top4,aegis-alt-top2
+          algorithms=dijkstra,bidijkstra,astar,aegis,aegis-alt,aegis-alt-top4,aegis-alt-top2
           out=artifacts/top2-screen
           mkdir -p "$out"
           for region in andorra bremen luxembourg tokyo; do
