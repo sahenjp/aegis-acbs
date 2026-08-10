@@ -56,6 +56,5 @@ search = replace_once(
 )
 search_path.write_text(search)
 
-# The scalar specialization preserves the exact top1 ranking and only removes
-# generic mask/source-row work from the one-landmark hot path.
 runpy.run_path("scripts/materialize_metric_alt_scalar1.py", run_name="__main__")
+runpy.run_path("scripts/materialize_metric_alt_coordinate1.py", run_name="__main__")
