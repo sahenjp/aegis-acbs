@@ -1,0 +1,72 @@
+name: RoutingKit CCH same-graph smoke
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/export_routingkit_cch_baseline.go'
+      - 'scripts/routingkit_cch_baseline.cpp'
+      - '.github/workflows/routingkit-cch-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  cch-road-smoke:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Build pinned RoutingKit and Aegis
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zlib1g-dev g++ osmium-tool
+          git clone https://github.com/RoutingKit/RoutingKit.git "$RUNNER_TEMP/RoutingKit"
+          git -C "$RUNNER_TEMP/RoutingKit" checkout 54d49bb0cdea56dde182357522e4e86a03c57852
+          make -C "$RUNNER_TEMP/RoutingKit" -j2
+          g++ -O3 -DNDEBUG -std=c++17 -march=native \
+            -I"$RUNNER_TEMP/RoutingKit/include" \
+            scripts/routingkit_cch_baseline.cpp \
+            -L"$RUNNER_TEMP/RoutingKit/lib" -lroutingkit \
+            -lz -fopenmp -pthread -lm \
+            -o "$RUNNER_TEMP/routingkit_cch_baseline"
+          go run -tags routingkitcchbaseline scripts/export_routingkit_cch_baseline.go -h
+          go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Replay identical Andorra query pairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 6 --retry-all-errors --retry-delay 2 \
+            https://download.geofabrik.de/europe/andorra-latest.osm.pbf \
+            -o "$RUNNER_TEMP/andorra.osm.pbf"
+          osmium cat "$RUNNER_TEMP/andorra.osm.pbf" -o "$RUNNER_TEMP/andorra.osm" --overwrite
+          "$RUNNER_TEMP/aegis" import-osm \
+            --input "$RUNNER_TEMP/andorra.osm" \
+            --output "$RUNNER_TEMP/andorra-time.aegis" \
+            --profile car --metric time
+          "$RUNNER_TEMP/aegis" benchmark \
+            --graph "$RUNNER_TEMP/andorra-time.aegis" \
+            --queries 300 --repeats 1 --order interleaved --suite mixed \
+            --seed 424242 --algorithms dijkstra,aegis \
+            --output "$RUNNER_TEMP/andorra-report.json" --html ""
+          go run -tags routingkitcchbaseline scripts/export_routingkit_cch_baseline.go \
+            --graph "$RUNNER_TEMP/andorra-time.aegis" \
+            --report "$RUNNER_TEMP/andorra-report.json" \
+            --output "$RUNNER_TEMP/routingkit-cch-input.txt"
+          LD_LIBRARY_PATH="$RUNNER_TEMP/RoutingKit/lib" \
+            "$RUNNER_TEMP/routingkit_cch_baseline" \
+              "$RUNNER_TEMP/routingkit-cch-input.txt" \
+              "$RUNNER_TEMP/routingkit-cch-andorra.json" 3
+          python3 - <<'PY'
+          import json, os
+          p = os.path.join(os.environ['RUNNER_TEMP'], 'routingkit-cch-andorra.json')
+          d = json.load(open(p))
+          assert d['allCorrect'] is True
+          assert d['queries'] == 300
+          print('routingkit-cch-road-smoke', json.dumps(d, sort_keys=True))
+          PY
