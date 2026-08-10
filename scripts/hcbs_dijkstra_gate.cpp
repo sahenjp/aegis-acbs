@@ -11,9 +11,13 @@
 #include <utility>
 #include <vector>
 
+#define Input RoutingKitHCBSInput
+#define read_input routingkit_hcbs_read_input
 #define main routingkit_hcbs_standalone_main
 #include "routingkit_hcbs_query.cpp"
 #undef main
+#undef read_input
+#undef Input
 
 using RoutingKit::ContractionHierarchy;
 
