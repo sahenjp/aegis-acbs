@@ -69,3 +69,17 @@ jobs:
         run: bash -n scripts/*.sh
       - name: Python syntax
         run: python3 -m py_compile scripts/*.py
+
+  ch-adapter-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Compile pinned CH comparator adapter
+        shell: bash
+        run: |
+          go get github.com/LdDl/ch@v1.10.0
+          go run -tags chbaseline scripts/ch_baseline.go -h
