@@ -1,4 +1,4 @@
-name: Interleaved CH epoch-HCBS CCH comparison
+name: Strong hierarchy baseline comparison
 
 on:
   pull_request:
@@ -9,10 +9,11 @@ on:
       - 'scripts/materialize_hierarchy_interleaved_v2.py'
       - 'scripts/materialize_hcbs_epoch_queue.py'
       - 'scripts/materialize_hierarchy_epoch_interleaved.py'
+      - 'scripts/materialize_strong_hierarchy_baselines.py'
       - '.github/workflows/hierarchy-interleaved-smoke.yml'
 
 concurrency:
-  group: hierarchy-epoch-interleaved-${{ github.event.pull_request.number }}
+  group: strong-hierarchy-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
@@ -25,18 +26,18 @@ jobs:
       matrix:
         region: [andorra, bremen, luxembourg, tokyo]
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
           cache: true
-      - name: Build pinned RoutingKit and epoch-HCBS benchmark
+      - name: Build pinned RoutingKit and strong comparator
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/materialize_hierarchy_epoch_interleaved.py
+          python3 scripts/materialize_strong_hierarchy_baselines.py
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends zlib1g-dev g++ osmium-tool
           git clone https://github.com/RoutingKit/RoutingKit.git "$RUNNER_TEMP/RoutingKit"
@@ -70,6 +71,7 @@ jobs:
               osmium extract --bbox 139.45,35.45,140.05,35.90 --strategy complete_ways --overwrite --output "$RUNNER_TEMP/input.osm.pbf" "$RUNNER_TEMP/kanto.osm.pbf"
               ;;
           esac
+          osmium fileinfo "$RUNNER_TEMP/input.osm.pbf" >/dev/null
           osmium cat "$RUNNER_TEMP/input.osm.pbf" -o "$RUNNER_TEMP/input.osm" --overwrite
           "$RUNNER_TEMP/aegis" import-osm \
             --input "$RUNNER_TEMP/input.osm" \
@@ -80,12 +82,14 @@ jobs:
             --queries-per-seed 10000 \
             --seeds 1010,424242,20260717 \
             --output "$RUNNER_TEMP/hierarchy-input.txt"
-      - name: Run three process repeats with six-way rotated order
+          mkdir -p "artifacts/strong-${{ matrix.region }}"
+          sha256sum "$RUNNER_TEMP/input.osm.pbf" "$RUNNER_TEMP/road-time.aegis" "$RUNNER_TEMP/hierarchy-input.txt" \
+            > "artifacts/strong-${{ matrix.region }}/dataset-sha256.txt"
+      - name: Run three process repeats with eight-way rotated order
         shell: bash
         run: |
           set -euo pipefail
-          dir="artifacts/hierarchy-epoch-${{ matrix.region }}"
-          mkdir -p "$dir"
+          dir="artifacts/strong-${{ matrix.region }}"
           uname -a > "$dir/hardware.txt"
           lscpu >> "$dir/hardware.txt"
           for run in 1 2 3; do
@@ -93,17 +97,16 @@ jobs:
               env LD_LIBRARY_PATH="$RUNNER_TEMP/RoutingKit/lib" \
               "$RUNNER_TEMP/hierarchy_interleaved" "$RUNNER_TEMP/hierarchy-input.txt" 31 \
               | tee "$dir/run-$run.txt"
-            grep -q 'exact_checks=150000' "$dir/run-$run.txt"
+            grep -q 'exact_checks=210000' "$dir/run-$run.txt"
             grep -q 'routingkit-ch .*correct=true' "$dir/run-$run.txt"
-            grep -q 'hcbs-alternate .*correct=true' "$dir/run-$run.txt"
-            grep -q 'hcbs-lower-key .*correct=true' "$dir/run-$run.txt"
-            grep -q 'hcbs-lower-key-queue .*correct=true' "$dir/run-$run.txt"
             grep -q 'hcbs-epoch-lower-key .*correct=true' "$dir/run-$run.txt"
             grep -q 'routingkit-cch .*correct=true' "$dir/run-$run.txt"
+            grep -q 'cch-perfect-ch .*correct=true' "$dir/run-$run.txt"
+            grep -q 'cch-perfect-epoch-hcbs .*correct=true' "$dir/run-$run.txt"
           done
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: hierarchy-epoch-${{ matrix.region }}
-          path: artifacts/hierarchy-epoch-${{ matrix.region }}
+          name: strong-hierarchy-${{ matrix.region }}
+          path: artifacts/strong-${{ matrix.region }}
           if-no-files-found: error
