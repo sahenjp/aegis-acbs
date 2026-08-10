@@ -1,16 +1,15 @@
-name: Metric ALT top1 screening
+name: CH same-graph screening
 
 on:
   pull_request:
     paths:
       - 'internal/search/**'
       - 'internal/bench/**'
-      - 'scripts/materialize_metric_alt_layout_sweep.py'
-      - 'scripts/materialize_metric_alt_top1.py'
+      - 'scripts/ch_baseline.go'
       - '.github/workflows/metric-alt-top1-screen.yml'
 
 concurrency:
-  group: metric-alt-top1-${{ github.event.pull_request.number }}
+  group: ch-same-graph-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
@@ -26,17 +25,23 @@ jobs:
         with:
           go-version: '1.23.x'
           cache: true
-      - name: Materialize node-major ALT top1 candidate
+      - name: Validate Aegis and CH adapter
         run: |
-          python3 scripts/materialize_metric_alt_top1.py
-          gofmt -w internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go
-      - name: Validate exactness and concurrency
-        run: |
+          set -euo pipefail
           git diff --check
           go test ./...
           go vet ./...
-          go test -race ./internal/search ./internal/graph ./internal/bench ./internal/server
           go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+          cp go.mod "$RUNNER_TEMP/go.mod.before"
+          if [ -f go.sum ]; then cp go.sum "$RUNNER_TEMP/go.sum.before"; fi
+          go get github.com/LdDl/ch@v1.10.0
+          go run -tags chbaseline scripts/ch_baseline.go -h
+          mv "$RUNNER_TEMP/go.mod.before" go.mod
+          if [ -f "$RUNNER_TEMP/go.sum.before" ]; then
+            mv "$RUNNER_TEMP/go.sum.before" go.sum
+          else
+            rm -f go.sum
+          fi
       - name: Install Osmium
         run: |
           sudo apt-get update
@@ -79,11 +84,10 @@ jobs:
               --input "$RUNNER_TEMP/tokyo-metro.osm" \
               --output "$RUNNER_TEMP/tokyo-time.aegis" \
               --profile car --metric time
-      - name: Benchmark exact candidates
+      - name: Generate same-query exact reports
         run: |
           set -euo pipefail
-          algorithms=dijkstra,bidijkstra,astar,aegis,aegis-alt,aegis-alt-top4,aegis-alt-top2,aegis-alt-top1
-          out=artifacts/top1-screen
+          out=artifacts/ch-screen
           mkdir -p "$out"
           cp import-*.time "$out/"
           uname -a > "$out/hardware.txt"
@@ -91,32 +95,50 @@ jobs:
           free -h >> "$out/hardware.txt"
           go version >> "$out/hardware.txt"
           for region in andorra bremen luxembourg tokyo; do
-            graph="$RUNNER_TEMP/$region-time.aegis"
-            for seed in 1010 424242 20260717; do
-              run_dir="$out/$region/seed-$seed"
-              mkdir -p "$run_dir"
-              repeats=3
-              order=rotated
-              if [ "$region" = tokyo ]; then
-                repeats=1
-                order=interleaved
-              fi
-              /usr/bin/time -v -o "$run_dir/resources.time" \
-                "$RUNNER_TEMP/aegis" benchmark \
-                  --graph "$graph" \
-                  --queries 1000 \
-                  --repeats "$repeats" \
-                  --order "$order" \
-                  --suite mixed \
-                  --seed "$seed" \
-                  --algorithms "$algorithms" \
-                  --output "$run_dir/report.json" \
-                  --html "" \
-                  2> >(tee "$run_dir/preprocess.log" >&2)
-            done
+            run_dir="$out/$region"
+            mkdir -p "$run_dir"
+            repeats=3
+            order=rotated
+            if [ "$region" = tokyo ]; then
+              repeats=1
+              order=interleaved
+            fi
+            "$RUNNER_TEMP/aegis" benchmark \
+              --graph "$RUNNER_TEMP/$region-time.aegis" \
+              --queries 1000 \
+              --repeats "$repeats" \
+              --order "$order" \
+              --suite mixed \
+              --seed 1010 \
+              --algorithms dijkstra,bidijkstra,astar,aegis \
+              --output "$run_dir/aegis.json" \
+              --html ""
           done
+      - name: Benchmark pinned Contraction Hierarchies comparator
+        run: |
+          set -euo pipefail
+          cp go.mod "$RUNNER_TEMP/go.mod.before"
+          if [ -f go.sum ]; then cp go.sum "$RUNNER_TEMP/go.sum.before"; fi
+          go get github.com/LdDl/ch@v1.10.0
+          for region in andorra bremen luxembourg tokyo; do
+            run_dir="artifacts/ch-screen/$region"
+            /usr/bin/time -v -o "$run_dir/ch-resources.time" \
+              go run -tags chbaseline scripts/ch_baseline.go \
+                --graph "$RUNNER_TEMP/$region-time.aegis" \
+                --report "$run_dir/aegis.json" \
+                --repeats 3 \
+                --output "$run_dir/ch.json" \
+                2> >(tee "$run_dir/ch.log" >&2)
+          done
+          mv "$RUNNER_TEMP/go.mod.before" go.mod
+          if [ -f "$RUNNER_TEMP/go.sum.before" ]; then
+            mv "$RUNNER_TEMP/go.sum.before" go.sum
+          else
+            rm -f go.sum
+          fi
       - uses: actions/upload-artifact@v6
+        if: always()
         with:
-          name: metric-alt-top1-screen
-          path: artifacts/top1-screen
+          name: ch-same-graph-screen
+          path: artifacts/ch-screen
           if-no-files-found: error
