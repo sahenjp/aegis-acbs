@@ -78,8 +78,9 @@ jobs:
         with:
           go-version: '1.26.x'
           cache: true
-      - name: Compile pinned CH comparator adapter
+      - name: Compile and execute pinned CH comparator smoke
         shell: bash
         run: |
           go get github.com/LdDl/ch@v1.10.0
           go run -tags chbaseline scripts/ch_baseline.go -h
+          go run -tags chbaseline scripts/ch_baseline_smoke.go
