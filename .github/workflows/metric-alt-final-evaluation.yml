@@ -1,0 +1,150 @@
+name: Metric ALT final evaluation
+
+on:
+  pull_request:
+
+concurrency:
+  group: metric-alt-final-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Materialize finalists and references
+        run: |
+          python3 scripts/materialize_metric_alt_layout_sweep.py
+          python3 scripts/materialize_astar_alt_baseline.py
+          python3 scripts/materialize_metric_alt_static_baseline.py
+          python3 scripts/materialize_metric_alt_guarded_race.py
+          python3 scripts/materialize_directed_alt_baseline.py
+          python3 scripts/materialize_directed_alt_layout_sweep.py
+          python3 scripts/fix_directed_alt_cli_preparation.py
+          gofmt -w \
+            cmd/aegis/main.go \
+            internal/search/acbs.go \
+            internal/search/search.go \
+            internal/search/metric_alt.go \
+            internal/search/metric_alt_test.go \
+            internal/search/metric_alt_static_test.go \
+            internal/search/metric_alt_race.go \
+            internal/search/metric_alt_race_test.go \
+            internal/search/astar_alt.go \
+            internal/search/directed_alt.go \
+            internal/search/directed_alt_test.go
+      - name: Validate exactness and concurrency
+        run: |
+          git diff --check
+          go test ./...
+          go vet ./...
+          go test -race ./internal/search ./internal/graph ./internal/bench ./internal/server
+          go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Install Osmium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osmium-tool
+      - name: Download regional extracts
+        run: |
+          set -euo pipefail
+          download() {
+            local name=$1
+            local url=$2
+            local pbf="$RUNNER_TEMP/$name.osm.pbf"
+            curl -fL --retry 6 --retry-all-errors --retry-delay 3 "$url" -o "$pbf"
+            osmium fileinfo "$pbf" >/dev/null
+            osmium cat "$pbf" -o "$RUNNER_TEMP/$name.osm" --overwrite
+          }
+          download andorra https://download.geofabrik.de/europe/andorra-latest.osm.pbf
+          download bremen https://download.geofabrik.de/europe/germany/bremen-latest.osm.pbf
+          download luxembourg https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf
+      - name: Benchmark regional exact algorithms
+        run: |
+          set -euo pipefail
+          out=artifacts/final/regional
+          mkdir -p "$out"
+          algorithms=dijkstra,bidijkstra,astar,astar-alt,astar-directed-alt,astar-directed-alt-top4,astar-directed-alt-top2,portfolio,aegis-race,aegis,aegis-alt-static,aegis-alt-top4,aegis-alt-guarded-race
+          for region in andorra bremen luxembourg; do
+            for metric in distance time; do
+              graph="$RUNNER_TEMP/$region-$metric.aegis"
+              "$RUNNER_TEMP/aegis" import-osm \
+                --input "$RUNNER_TEMP/$region.osm" \
+                --output "$graph" \
+                --profile car \
+                --metric "$metric"
+              for seed in 1010 424242 20260717; do
+                run_dir="$out/$region-$metric/seed-$seed"
+                mkdir -p "$run_dir"
+                "$RUNNER_TEMP/aegis" benchmark \
+                  --graph "$graph" \
+                  --queries 300 \
+                  --repeats 3 \
+                  --order rotated \
+                  --suite mixed \
+                  --seed "$seed" \
+                  --algorithms "$algorithms" \
+                  --output "$run_dir/report.json" \
+                  --html "" \
+                  2> >(tee "$run_dir/preprocess.log" >&2)
+              done
+            done
+          done
+      - name: Build Tokyo metropolitan graph
+        run: |
+          set -euo pipefail
+          pbf="$RUNNER_TEMP/kanto.osm.pbf"
+          tokyo_pbf="$RUNNER_TEMP/tokyo-metro.osm.pbf"
+          tokyo_osm="$RUNNER_TEMP/tokyo-metro.osm"
+          curl -fL --retry 6 --retry-all-errors --retry-delay 3 \
+            https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
+            -o "$pbf"
+          osmium fileinfo "$pbf" >/dev/null
+          osmium extract \
+            --bbox 139.45,35.45,140.05,35.90 \
+            --strategy complete_ways \
+            --overwrite \
+            --output "$tokyo_pbf" \
+            "$pbf"
+          osmium fileinfo "$tokyo_pbf" >/dev/null
+          osmium cat "$tokyo_pbf" -o "$tokyo_osm" --overwrite
+          "$RUNNER_TEMP/aegis" import-osm \
+            --input "$tokyo_osm" \
+            --output "$RUNNER_TEMP/tokyo-time.aegis" \
+            --profile car \
+            --metric time
+          mkdir -p artifacts/final/tokyo
+          "$RUNNER_TEMP/aegis" inspect --graph "$RUNNER_TEMP/tokyo-time.aegis" \
+            > artifacts/final/tokyo/inspect.json
+      - name: Benchmark Tokyo exact algorithms
+        run: |
+          set -euo pipefail
+          out=artifacts/final/tokyo
+          algorithms=dijkstra,bidijkstra,astar,astar-alt,astar-directed-alt,astar-directed-alt-top4,astar-directed-alt-top2,portfolio,aegis-race,aegis,aegis-alt-static,aegis-alt-top4,aegis-alt-guarded-race
+          for seed in 1010 424242 20260717; do
+            run_dir="$out/seed-$seed"
+            mkdir -p "$run_dir"
+            "$RUNNER_TEMP/aegis" benchmark \
+              --graph "$RUNNER_TEMP/tokyo-time.aegis" \
+              --queries 300 \
+              --repeats 1 \
+              --order interleaved \
+              --suite mixed \
+              --seed "$seed" \
+              --algorithms "$algorithms" \
+              --output "$run_dir/report.json" \
+              --html "" \
+              2> >(tee "$run_dir/preprocess.log" >&2)
+          done
+      - uses: actions/upload-artifact@v6
+        with:
+          name: metric-alt-final-evaluation
+          path: artifacts/final
+          if-no-files-found: error

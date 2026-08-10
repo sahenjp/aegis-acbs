@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"math"
 
 	"github.com/lasder-ca/aegis-acbs/internal/graph"
@@ -10,6 +11,7 @@ import (
 const (
 	acbsSchedulerVersion        = "edge-efficiency-v3"
 	acbsChordPotentialModel     = "balanced-chord-v3"
+	acbsMetricALTPotentialModel = "balanced-metric-alt-v1"
 	acbsProjectionModel         = "balanced-projection-v1"
 	acbsLateGuardScheduler      = "edge-efficiency-v3-late-upper-bound-guard-v1"
 	acbsConnect32Scheduler      = "edge-efficiency-v3-connection-guard-32-until-upper-v1"
@@ -35,6 +37,7 @@ type acbsOptions struct {
 	adaptive   bool
 	pruning    bool
 	projection bool
+	metricALT  bool
 	guardMode  acbsGuardMode
 }
 
@@ -44,6 +47,20 @@ func acbs(ctx context.Context, g *graph.Graph, source, target int) (Result, erro
 	// path therefore keeps the exact coupled-bound termination rule but does
 	// not run the optional per-node incumbent pruning experiment.
 	return acbsWithOptions(ctx, g, source, target, acbsOptions{algorithm: Aegis, adaptive: true, pruning: false})
+}
+
+func acbsMetricALT(ctx context.Context, g *graph.Graph, source, target int) (Result, error) {
+	if g.EdgeCount < metricALTMinimumEdges {
+		return acbsWithOptions(ctx, g, source, target, acbsOptions{
+			algorithm: AegisALT, adaptive: true, pruning: false,
+		})
+	}
+	if _, ok := metricALTForGraph(g); !ok {
+		return Result{}, errors.New("aegis-alt requires PrepareMetricALT for this graph")
+	}
+	return acbsWithOptions(ctx, g, source, target, acbsOptions{
+		algorithm: AegisALT, adaptive: true, pruning: false, metricALT: true,
+	})
 }
 
 func acbsLateGuard(ctx context.Context, g *graph.Graph, source, target int) (Result, error) {
@@ -96,6 +113,8 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 	modelName := acbsChordPotentialModel
 	if opts.projection {
 		modelName = acbsProjectionModel
+	} else if opts.metricALT {
+		modelName = acbsMetricALTPotentialModel
 	}
 	if source == target {
 		return Result{Path: []int{source}, Stats: Stats{
@@ -112,6 +131,13 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 	settledF, settledB := w.settledF, w.settledB
 
 	potential := newACBSPotential(g, source, target, opts.projection)
+	if opts.metricALT {
+		index, ok := metricALTForGraph(g)
+		if !ok {
+			return Result{}, errors.New("metric ALT index disappeared before search")
+		}
+		potential = newACBSMetricALTPotential(g, source, target, index)
+	}
 	phiS, freshS := w.potential(g, potential, source)
 	phiT, freshT := w.potential(g, potential, target)
 
@@ -125,6 +151,10 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 	stats := Stats{
 		Algorithm: opts.algorithm, QueuePushes: 2,
 		SchedulerVersion: schedulerName(opts), PotentialModel: modelName,
+	}
+	if potential.metricALT != nil {
+		stats.PotentialLandmarks = len(potential.metricALT.landmarks)
+		stats.PotentialIndexBytes = potential.metricALT.bytes()
 	}
 	if freshS {
 		stats.PotentialEvaluations++
@@ -471,6 +501,8 @@ type acbsPotential struct {
 	projectionScale           float64
 	costPerMeter              float64
 	projection                bool
+	metricALT                 *metricALTIndex
+	source, target            int
 	enabled                   bool
 }
 
@@ -502,6 +534,17 @@ func newACBSPotential(g *graph.Graph, source, target int, projection bool) acbsP
 	return p
 }
 
+func newACBSMetricALTPotential(
+	g *graph.Graph, source, target int, index *metricALTIndex,
+) acbsPotential {
+	p := newACBSPotential(g, source, target, false)
+	p.metricALT = index
+	p.source = source
+	p.target = target
+	p.enabled = true
+	return p
+}
+
 func (p acbsPotential) phi(g *graph.Graph, v int) int64 {
 	if !p.enabled {
 		return 0
@@ -520,6 +563,15 @@ func (p acbsPotential) phi(g *graph.Graph, v int) int64 {
 	}
 	forward := lowerBoundCost(chordUnitMeters(x, y, z, p.targetX, p.targetY, p.targetZ), p.costPerMeter)
 	backward := lowerBoundCost(chordUnitMeters(x, y, z, p.sourceX, p.sourceY, p.sourceZ), p.costPerMeter)
+	if p.metricALT != nil {
+		altForward, altBackward := p.metricALT.bounds(p.source, p.target, v)
+		if altForward > forward {
+			forward = altForward
+		}
+		if altBackward > backward {
+			backward = altBackward
+		}
+	}
 	return signedDifference(forward, backward)
 }
 
@@ -530,6 +582,15 @@ func (p acbsPotential) bounds(g *graph.Graph, v int) (forward, backward uint64) 
 	x, y, z := g.UnitVector(v)
 	forward = lowerBoundCost(chordUnitMeters(x, y, z, p.targetX, p.targetY, p.targetZ), p.costPerMeter)
 	backward = lowerBoundCost(chordUnitMeters(x, y, z, p.sourceX, p.sourceY, p.sourceZ), p.costPerMeter)
+	if p.metricALT != nil {
+		altForward, altBackward := p.metricALT.bounds(p.source, p.target, v)
+		if altForward > forward {
+			forward = altForward
+		}
+		if altBackward > backward {
+			backward = altBackward
+		}
+	}
 	return forward, backward
 }
 
