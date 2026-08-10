@@ -82,7 +82,7 @@ jobs:
       - name: Compile Aegis exporter
         shell: bash
         run: go run -tags routingkitbaseline scripts/export_routingkit_baseline.go -h
-      - name: Build pinned RoutingKit and comparator
+      - name: Build pinned RoutingKit and query comparators
         shell: bash
         run: |
           set -euo pipefail
@@ -91,12 +91,14 @@ jobs:
           git clone https://github.com/RoutingKit/RoutingKit.git "$RUNNER_TEMP/RoutingKit"
           git -C "$RUNNER_TEMP/RoutingKit" checkout 54d49bb0cdea56dde182357522e4e86a03c57852
           make -C "$RUNNER_TEMP/RoutingKit" -j2
-          g++ -O3 -DNDEBUG -std=c++11 \
-            -I"$RUNNER_TEMP/RoutingKit/include" \
-            scripts/routingkit_ch_baseline.cpp \
-            -L"$RUNNER_TEMP/RoutingKit/lib" -lroutingkit \
-            -lz -fopenmp -pthread -lm \
-            -o "$RUNNER_TEMP/routingkit_ch_baseline"
+          for source in routingkit_ch_baseline routingkit_hcbs_query; do
+            g++ -O3 -DNDEBUG -std=c++17 -march=native \
+              -I"$RUNNER_TEMP/RoutingKit/include" \
+              "scripts/$source.cpp" \
+              -L"$RUNNER_TEMP/RoutingKit/lib" -lroutingkit \
+              -lz -fopenmp -pthread -lm \
+              -o "$RUNNER_TEMP/$source"
+          done
           go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
       - name: Replay identical Andorra query pairs
         shell: bash
@@ -112,7 +114,7 @@ jobs:
             --profile car --metric time
           "$RUNNER_TEMP/aegis" benchmark \
             --graph "$RUNNER_TEMP/andorra-time.aegis" \
-            --queries 300 --repeats 1 --order interleaved --suite mixed \
+            --queries 1000 --repeats 1 --order interleaved --suite mixed \
             --seed 424242 --algorithms dijkstra,aegis \
             --output "$RUNNER_TEMP/andorra-report.json" --html ""
           go run -tags routingkitbaseline scripts/export_routingkit_baseline.go \
@@ -122,12 +124,16 @@ jobs:
           LD_LIBRARY_PATH="$RUNNER_TEMP/RoutingKit/lib" \
             "$RUNNER_TEMP/routingkit_ch_baseline" \
               "$RUNNER_TEMP/routingkit-input.txt" \
-              "$RUNNER_TEMP/routingkit-andorra.json" 3
+              "$RUNNER_TEMP/routingkit-andorra.json" 31
+          LD_LIBRARY_PATH="$RUNNER_TEMP/RoutingKit/lib" \
+            "$RUNNER_TEMP/routingkit_hcbs_query" \
+              "$RUNNER_TEMP/routingkit-input.txt" 31 \
+              | tee "$RUNNER_TEMP/hcbs.txt"
           python3 - <<'PY'
           import json, os
           p = os.path.join(os.environ['RUNNER_TEMP'], 'routingkit-andorra.json')
           d = json.load(open(p))
           assert d['allCorrect'] is True
-          assert d['queries'] == 300
+          assert d['queries'] == 1000
           print('routingkit-road-smoke', json.dumps({k:d[k] for k in ['queries','preprocessNs','medianNs','p95Ns','p99Ns','allCorrect']}))
           PY
