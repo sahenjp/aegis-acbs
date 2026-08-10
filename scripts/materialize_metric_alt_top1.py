@@ -56,6 +56,7 @@ search = replace_once(
 )
 search_path.write_text(search)
 
-# Keep top1 generic so it remains a within-run reference. Only the top2 path is
-# specialized on this branch.
+# Keep top1 generic as an in-run reference. Top2 uses the unrolled endpoint
+# cache and then the two-coordinate balanced potential below.
 runpy.run_path("scripts/materialize_metric_alt_scalar2.py", run_name="__main__")
+runpy.run_path("scripts/materialize_metric_alt_coordinate2.py", run_name="__main__")
