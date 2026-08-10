@@ -41,7 +41,7 @@ func TestBidirectionalAlgorithmsMatchDijkstraExhaustiveSmallDirected(t *testing.
 					if err != nil {
 						t.Fatal(err)
 					}
-					for _, alg := range []Algorithm{BiDijkstra, Aegis, AegisLateGuard, AegisConnect32, AegisConnect40, AegisConnect32x16, AegisPrune, AegisProjection, AegisStatic, AegisNoPrune} {
+					for _, alg := range []Algorithm{BiDijkstra, Aegis, AegisEntropic, AegisLateGuard, AegisConnect32, AegisConnect40, AegisConnect32x16, AegisPrune, AegisProjection, AegisStatic, AegisNoPrune} {
 						b, err := Run(ctx, g, s, d, alg)
 						if err != nil {
 							t.Fatal(err)
@@ -83,7 +83,7 @@ func TestAStarAndAegisMatchDijkstraRoadLike(t *testing.T) {
 		for q := 0; q < 30; q++ {
 			s, d := rnd.Intn(n), rnd.Intn(n)
 			a, _ := Run(ctx, g, s, d, Dijkstra)
-			for _, alg := range []Algorithm{AStar, BiDijkstra, Aegis, AegisLateGuard, AegisConnect32, AegisConnect40, AegisConnect32x16, AegisPrune, AegisProjection, AegisStatic, AegisNoPrune, AegisRace} {
+			for _, alg := range []Algorithm{AStar, BiDijkstra, Aegis, AegisEntropic, AegisLateGuard, AegisConnect32, AegisConnect40, AegisConnect32x16, AegisPrune, AegisProjection, AegisStatic, AegisNoPrune, AegisRace} {
 				b, err := Run(ctx, g, s, d, alg)
 				if err != nil {
 					t.Fatal(err)
@@ -184,7 +184,7 @@ func TestWorkspaceReuseDoesNotLeakDistances(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, alg := range []Algorithm{AStar, BiDijkstra, Aegis} {
+			for _, alg := range []Algorithm{AStar, BiDijkstra, Aegis, AegisEntropic} {
 				got, err := Run(ctx, g, pair[0], pair[1], alg)
 				if err != nil {
 					t.Fatal(err)

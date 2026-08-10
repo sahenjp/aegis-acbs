@@ -167,6 +167,7 @@ bin/aegis profile-trigger \
 | Document | Contents |
 |---|---|
 | [Algorithm](docs/ALGORITHM.md) | State, bounds, potential, scheduling, and termination |
+| [Entropic scheduler](docs/ENTROPIC_SCHEDULER.md) | Experimental proof-rate allocation law and promotion gate |
 | [Correctness](docs/CORRECTNESS.md) | Exactness argument and invariants |
 | [Benchmarking](docs/BENCHMARKING.md) | Timing order, statistics, memory, and comparison semantics |
 | [Tokyo evidence](docs/TOKYO_EVIDENCE.md) | Large-graph results, raw evidence, gates, and failed experiments |

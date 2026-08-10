@@ -244,7 +244,7 @@ func benchmark(args []string) error {
 		if g.MinCostPerMeter > 0 {
 			list = append(list, search.AStar)
 		}
-		list = append(list, search.AegisStatic)
+		list = append(list, search.AegisStatic, search.AegisEntropic)
 		if *experimental {
 			list = append(list, search.AegisLateGuard, search.AegisConnect32, search.AegisConnect40, search.AegisConnect32x16, search.AegisPrune, search.AegisProjection)
 		}
