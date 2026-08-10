@@ -1,4 +1,4 @@
-name: Cache-controlled epoch-HCBS comparison
+name: X64 cache-controlled epoch-HCBS gate
 
 on:
   pull_request:
@@ -7,16 +7,20 @@ on:
       - '.github/workflows/hcbs-epoch-cache-controlled.yml'
 
 concurrency:
-  group: epoch-cache-controlled-${{ github.event.pull_request.number }}
+  group: epoch-gate-x64-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  tokyo:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 150
+  regional:
+    strategy:
+      fail-fast: false
+      matrix:
+        region: [andorra, bremen, luxembourg, tokyo]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -41,34 +45,63 @@ jobs:
             -o "$RUNNER_TEMP/cache_controlled"
           go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
           go run -tags hierarchyinterleaved scripts/export_hierarchy_interleaved.go -h >/dev/null
-      - name: Build Tokyo graph and 30k fixed query stream
+      - name: Build identical road graph and 30k fixed query stream
         shell: bash
         run: |
           set -euo pipefail
-          curl -fL --retry 6 --retry-all-errors --retry-delay 2 \
-            https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
-            -o "$RUNNER_TEMP/kanto.osm.pbf"
-          osmium extract --bbox 139.45,35.45,140.05,35.90 --strategy complete_ways --overwrite \
-            --output "$RUNNER_TEMP/tokyo.osm.pbf" "$RUNNER_TEMP/kanto.osm.pbf"
-          osmium cat "$RUNNER_TEMP/tokyo.osm.pbf" -o "$RUNNER_TEMP/tokyo.osm" --overwrite
-          "$RUNNER_TEMP/aegis" import-osm \
-            --input "$RUNNER_TEMP/tokyo.osm" \
-            --output "$RUNNER_TEMP/tokyo-time.aegis" \
-            --profile car --metric time
+          region='${{ matrix.region }}'
+          case "$region" in
+            andorra)
+              curl -fL --retry 6 --retry-all-errors --retry-delay 2 \
+                https://download.geofabrik.de/europe/andorra-latest.osm.pbf \
+                -o "$RUNNER_TEMP/input.osm.pbf"
+              ;;
+            bremen)
+              curl -fL --retry 6 --retry-all-errors --retry-delay 2 \
+                https://download.geofabrik.de/europe/germany/bremen-latest.osm.pbf \
+                -o "$RUNNER_TEMP/input.osm.pbf"
+              ;;
+            luxembourg)
+              curl -fL --retry 6 --retry-all-errors --retry-delay 2 \
+                https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf \
+                -o "$RUNNER_TEMP/input.osm.pbf"
+              ;;
+            tokyo)
+              curl -fL --retry 6 --retry-all-errors --retry-delay 2 \
+                https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
+                -o "$RUNNER_TEMP/kanto.osm.pbf"
+              osmium extract --bbox 139.45,35.45,140.05,35.90 --strategy complete_ways --overwrite \
+                --output "$RUNNER_TEMP/input.osm.pbf" "$RUNNER_TEMP/kanto.osm.pbf"
+              ;;
+          esac
+          osmium fileinfo "$RUNNER_TEMP/input.osm.pbf" >/dev/null
+          osmium cat "$RUNNER_TEMP/input.osm.pbf" -o "$RUNNER_TEMP/input.osm" --overwrite
+          /usr/bin/time -v -o "$RUNNER_TEMP/import.time" \
+            "$RUNNER_TEMP/aegis" import-osm \
+              --input "$RUNNER_TEMP/input.osm" \
+              --output "$RUNNER_TEMP/road-time.aegis" \
+              --profile car --metric time
           go run -tags hierarchyinterleaved scripts/export_hierarchy_interleaved.go \
-            --graph "$RUNNER_TEMP/tokyo-time.aegis" \
+            --graph "$RUNNER_TEMP/road-time.aegis" \
             --queries-per-seed 10000 --seeds 1010,424242,20260717 \
             --output "$RUNNER_TEMP/hierarchy-input.txt"
-          mkdir -p artifacts/cache-controlled-tokyo
-          sha256sum "$RUNNER_TEMP/tokyo.osm.pbf" "$RUNNER_TEMP/tokyo-time.aegis" "$RUNNER_TEMP/hierarchy-input.txt" \
-            > artifacts/cache-controlled-tokyo/dataset-sha256.txt
+          dir="artifacts/epoch-gate-x64-$region"
+          mkdir -p "$dir"
+          sha256sum "$RUNNER_TEMP/input.osm.pbf" "$RUNNER_TEMP/road-time.aegis" "$RUNNER_TEMP/hierarchy-input.txt" \
+            > "$dir/dataset-sha256.txt"
+          cp "$RUNNER_TEMP/import.time" "$dir/"
+          stat -c 'graph_bytes=%s' "$RUNNER_TEMP/road-time.aegis" > "$dir/sizes.txt"
       - name: Run five three-way rotated processes
         shell: bash
         run: |
           set -euo pipefail
-          dir=artifacts/cache-controlled-tokyo
+          region='${{ matrix.region }}'
+          dir="artifacts/epoch-gate-x64-$region"
           uname -a > "$dir/hardware.txt"
           lscpu >> "$dir/hardware.txt"
+          free -h >> "$dir/hardware.txt"
+          go version >> "$dir/hardware.txt"
+          g++ --version | head -1 >> "$dir/hardware.txt"
           for run in 1 2 3 4 5; do
             /usr/bin/time -v -o "$dir/run-$run.time" \
               env LD_LIBRARY_PATH="$RUNNER_TEMP/RoutingKit/lib" \
@@ -80,7 +113,8 @@ jobs:
             grep -q 'routingkit-cch .*correct=true' "$dir/run-$run.txt"
           done
       - uses: actions/upload-artifact@v6
+        if: always()
         with:
-          name: cache-controlled-epoch-hcbs-tokyo
-          path: artifacts/cache-controlled-tokyo
+          name: epoch-hcbs-gate-x64-${{ matrix.region }}
+          path: artifacts/epoch-gate-x64-${{ matrix.region }}
           if-no-files-found: error
