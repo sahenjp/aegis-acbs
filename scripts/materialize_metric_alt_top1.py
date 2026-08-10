@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 
@@ -54,3 +55,7 @@ search = replace_once(
     "top1 algorithm dispatch",
 )
 search_path.write_text(search)
+
+# Keep top1 generic so it remains a within-run reference. Only the top2 path is
+# specialized on this branch.
+runpy.run_path("scripts/materialize_metric_alt_scalar2.py", run_name="__main__")
