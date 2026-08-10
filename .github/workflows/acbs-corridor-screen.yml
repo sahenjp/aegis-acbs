@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'scripts/materialize_acbs_corridor.py'
+      - 'scripts/patch_corridor_test_fixture.py'
       - '.github/workflows/acbs-corridor-screen.yml'
 
 concurrency:
@@ -26,6 +27,7 @@ jobs:
       - name: Materialize corridor candidate
         run: |
           python3 scripts/materialize_acbs_corridor.py
+          python3 scripts/patch_corridor_test_fixture.py
           gofmt -w internal/search/acbs.go internal/search/search.go internal/search/corridor_generated.go internal/search/corridor_generated_test.go
       - name: Validate exactness and race safety
         run: |
