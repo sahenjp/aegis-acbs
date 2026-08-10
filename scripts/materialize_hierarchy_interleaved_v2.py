@@ -45,23 +45,24 @@ replace_once(
 ''',
     "algorithm dispatch",
 )
-replace_once(
-    '''    std::cout << "hcbs-best-vs-ch-geomean-ratio="
-              << static_cast<double>(geomean_ratio(query_medians[2], query_medians[0])) << "\n";
-    std::cout << "hcbs-best-vs-cch-geomean-ratio="
-              << static_cast<double>(geomean_ratio(query_medians[2], query_medians[3])) << "\n";
-    std::cout << "hcbs-scheduler-vs-hcbs-alternate-geomean-ratio="
-              << static_cast<double>(geomean_ratio(query_medians[2], query_medians[1])) << "\n";
-''',
-    '''    std::cout << "hcbs-lower-key-vs-ch-geomean-ratio="
-              << static_cast<double>(geomean_ratio(query_medians[2], query_medians[0])) << "\n";
+
+# Replace the complete ratio block by anchored boundaries rather than exact
+# whitespace/string matching. This remains stable if the first materializer
+# renames helper functions or formatting changes slightly.
+start_marker = '    std::cout << "hcbs-best-vs-ch-geomean-ratio="'
+end_marker = '    return 0;\n}'
+start = text.find(start_marker)
+end = text.find(end_marker, start)
+if start < 0 or end < 0:
+    raise SystemExit(f"ratio block anchors missing: start={start} end={end}")
+ratio_block = '''    std::cout << "hcbs-lower-key-vs-ch-geomean-ratio="
+              << static_cast<double>(geomean_ratio(query_medians[2], query_medians[0])) << "\\n";
     std::cout << "hcbs-lower-key-vs-cch-geomean-ratio="
-              << static_cast<double>(geomean_ratio(query_medians[2], query_medians[4])) << "\n";
+              << static_cast<double>(geomean_ratio(query_medians[2], query_medians[4])) << "\\n";
     std::cout << "hcbs-lower-key-vs-alternate-geomean-ratio="
-              << static_cast<double>(geomean_ratio(query_medians[2], query_medians[1])) << "\n";
+              << static_cast<double>(geomean_ratio(query_medians[2], query_medians[1])) << "\\n";
     std::cout << "hcbs-lower-key-queue-vs-cch-geomean-ratio="
-              << static_cast<double>(geomean_ratio(query_medians[3], query_medians[4])) << "\n";
-''',
-    "ratio output",
-)
+              << static_cast<double>(geomean_ratio(query_medians[3], query_medians[4])) << "\\n";
+'''
+text = text[:start] + ratio_block + text[end:]
 path.write_text(text)
