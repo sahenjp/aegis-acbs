@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import runpy
 
 
-# Start from the exact node-major top1 candidate. This script changes only the
+# Apply after materialize_metric_alt_top1.py. This changes only the
 # one-active-landmark evaluation path; ranking, admissibility and ACBS stopping
 # conditions remain identical.
-runpy.run_path("scripts/materialize_metric_alt_top1.py", run_name="__main__")
-
-
 def replace_once(text: str, old: str, new: str, label: str) -> str:
     count = text.count(old)
     if count != 1:
