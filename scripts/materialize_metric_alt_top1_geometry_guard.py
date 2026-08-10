@@ -18,6 +18,7 @@ Path("internal/search/metric_alt_top1_guard.go").write_text(r'''package search
 
 import (
     "context"
+    "errors"
 
     "github.com/lasder-ca/aegis-acbs/internal/graph"
 )
@@ -50,7 +51,7 @@ func acbsMetricALTTop1GeometryGuard(
         return metricALTTop1GuardSingle(ctx, g, source, target, Aegis)
     }
     if _, ok := metricALTForGraph(g); !ok {
-        return Result{}, errMetricALTNotPrepared
+        return Result{}, errors.New("aegis-alt-top1 geometry guard requires PrepareMetricALT")
     }
     return metricALTTop1GuardSingle(ctx, g, source, target, AegisALTTop1)
 }
