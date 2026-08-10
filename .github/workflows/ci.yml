@@ -69,3 +69,29 @@ jobs:
         run: bash -n scripts/*.sh
       - name: Python syntax
         run: python3 -m py_compile scripts/*.py
+
+  routingkit-adapter-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Compile Aegis exporter
+        shell: bash
+        run: go run -tags routingkitbaseline scripts/export_routingkit_baseline.go -h
+      - name: Build pinned RoutingKit and compile comparator
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zlib1g-dev g++
+          git clone https://github.com/RoutingKit/RoutingKit.git "$RUNNER_TEMP/RoutingKit"
+          git -C "$RUNNER_TEMP/RoutingKit" checkout 54d49bb0cdea56dde182357522e4e86a03c57852
+          make -C "$RUNNER_TEMP/RoutingKit" -j2
+          g++ -O3 -DNDEBUG -std=c++11 \
+            -I"$RUNNER_TEMP/RoutingKit/include" \
+            scripts/routingkit_ch_baseline.cpp \
+            -L"$RUNNER_TEMP/RoutingKit/lib" -lroutingkit \
+            -lz -fopenmp -pthread -lm \
+            -o "$RUNNER_TEMP/routingkit_ch_baseline"
