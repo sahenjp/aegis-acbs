@@ -270,7 +270,7 @@ func (w *hcbsWorkspace) setBackward(node, distance uint32) {
 	w.backwardQueue.push(hcbsQueueItem{id: node, key: distance})
 }
 
-func (w *hcbsWorkspace) seenForward(node uint32) bool { return w.forwardSeen[node] == w.epoch }
+func (w *hcbsWorkspace) seenForward(node uint32) bool  { return w.forwardSeen[node] == w.epoch }
 func (w *hcbsWorkspace) seenBackward(node uint32) bool { return w.backwardSeen[node] == w.epoch }
 
 func (w *hcbsWorkspace) settleForward(index *HCBSIndex, incumbent *uint32) {
@@ -401,8 +401,8 @@ func newHCBSEpochQueue(n int) hcbsEpochQueue {
 	}
 }
 
-func (q *hcbsEpochQueue) empty() bool { return q.size == 0 }
-func (q *hcbsEpochQueue) peek() hcbsQueueItem { return q.heap[0] }
+func (q *hcbsEpochQueue) empty() bool             { return q.size == 0 }
+func (q *hcbsEpochQueue) peek() hcbsQueueItem     { return q.heap[0] }
 func (q *hcbsEpochQueue) contains(id uint32) bool { return q.posEpoch[id] == q.epoch }
 
 func (q *hcbsEpochQueue) clear() {
