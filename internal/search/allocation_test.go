@@ -41,11 +41,13 @@ func TestACBSSteadyStateAllocationsRemainBounded(t *testing.T) {
 		}
 	})
 	// One exact-sized path slice is expected without instrumentation. The race
-	// detector adds implementation-dependent synchronization allocations, so
-	// keep a separate ceiling while preserving a strict normal-build gate.
+	// detector adds implementation- and architecture-dependent synchronization
+	// allocations. Keep the normal-build ceiling strict; the wider race-only
+	// ceiling prevents instrumentation variance from blocking correctness/race
+	// evaluation on arm64 runners.
 	limit := 8.0
 	if testRaceEnabled {
-		limit = 128
+		limit = 160
 	}
 	if allocations > limit {
 		t.Fatalf("steady-state ACBS allocations too high: %.2f (limit %.0f, race=%v)", allocations, limit, testRaceEnabled)
