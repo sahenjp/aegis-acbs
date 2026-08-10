@@ -1,4 +1,4 @@
-name: Interleaved CH HCBS CCH comparison
+name: x86_64 interleaved CH HCBS CCH comparison
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ on:
       - '.github/workflows/hierarchy-interleaved-smoke.yml'
 
 concurrency:
-  group: hierarchy-interleaved-${{ github.event.pull_request.number }}
+  group: hierarchy-interleaved-x64-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
@@ -22,7 +22,7 @@ jobs:
       fail-fast: false
       matrix:
         region: [andorra, bremen, luxembourg, tokyo]
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
@@ -30,6 +30,12 @@ jobs:
         with:
           go-version: '1.26.x'
           cache: true
+      - name: Verify x86_64 runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          lscpu
       - name: Build pinned RoutingKit and benchmark
         shell: bash
         run: |
@@ -78,11 +84,11 @@ jobs:
             --queries-per-seed 10000 \
             --seeds 1010,424242,20260717 \
             --output "$RUNNER_TEMP/hierarchy-input.txt"
-      - name: Run three process-level repeats with rotated algorithm order
+      - name: Run three x86_64 process repeats with rotated order
         shell: bash
         run: |
           set -euo pipefail
-          dir="artifacts/hierarchy-interleaved-${{ matrix.region }}"
+          dir="artifacts/hierarchy-x64-${{ matrix.region }}"
           mkdir -p "$dir"
           uname -a > "$dir/hardware.txt"
           lscpu >> "$dir/hardware.txt"
@@ -100,6 +106,6 @@ jobs:
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: hierarchy-interleaved-${{ matrix.region }}
-          path: artifacts/hierarchy-interleaved-${{ matrix.region }}
+          name: hierarchy-x64-${{ matrix.region }}
+          path: artifacts/hierarchy-x64-${{ matrix.region }}
           if-no-files-found: error
