@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
-#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -31,6 +30,7 @@ struct Input {
     std::vector<unsigned> head;
     std::vector<unsigned> weight;
     std::vector<Query> queries;
+    bool has_reference = false;
 };
 
 static Input read_input(const std::string& path) {
@@ -38,9 +38,15 @@ static Input read_input(const std::string& path) {
     if (!in) throw std::runtime_error("cannot open input");
     std::string magic;
     in >> magic;
-    if (magic != "AEGIS_ROUTINGKIT_CH_V1") throw std::runtime_error("bad input magic");
-    unsigned edge_count = 0, query_count = 0;
     Input data;
+    if (magic == "AEGIS_ROUTINGKIT_CH_V1") {
+        data.has_reference = true;
+    } else if (magic == "AEGIS_ROUTINGKIT_CH_V2") {
+        data.has_reference = false;
+    } else {
+        throw std::runtime_error("bad input magic");
+    }
+    unsigned edge_count = 0, query_count = 0;
     in >> data.node_count >> edge_count >> query_count;
     data.tail.resize(edge_count);
     data.head.resize(edge_count);
@@ -50,9 +56,13 @@ static Input read_input(const std::string& path) {
     }
     data.queries.resize(query_count);
     for (unsigned i = 0; i < query_count; ++i) {
-        unsigned reachable = 0;
-        in >> data.queries[i].source >> data.queries[i].target >> data.queries[i].reference >> reachable;
-        data.queries[i].reachable = reachable != 0;
+        if (data.has_reference) {
+            unsigned reachable = 0;
+            in >> data.queries[i].source >> data.queries[i].target >> data.queries[i].reference >> reachable;
+            data.queries[i].reachable = reachable != 0;
+        } else {
+            in >> data.queries[i].source >> data.queries[i].target;
+        }
     }
     if (!in) throw std::runtime_error("truncated input");
     return data;
@@ -203,8 +213,6 @@ private:
                 if (forward_queue.contains_id(head)) {
                     forward_queue.decrease_key({head, candidate});
                 } else {
-                    // This should not occur for non-negative upward CH arcs, but
-                    // reinsertion keeps the experimental query exact if it does.
                     forward_queue.push({head, candidate});
                 }
             }
@@ -274,9 +282,7 @@ static Summary benchmark_variant(const std::string& name, const Input& data, uns
     for (const auto& q : data.queries) {
         std::vector<uint64_t> samples;
         samples.reserve(repeats);
-        unsigned result = inf_weight;
-        // One untimed warmup makes allocation/lazy-cache effects comparable.
-        result = run(q);
+        unsigned result = run(q);
         for (unsigned r = 0; r < repeats; ++r) {
             const auto start = std::chrono::steady_clock::now();
             result = run(q);
@@ -303,17 +309,35 @@ int main(int argc, char** argv) {
         return 2;
     }
     const unsigned repeats = argc == 3 ? static_cast<unsigned>(std::stoul(argv[2])) : 31;
-    const Input data = read_input(argv[1]);
+    Input data = read_input(argv[1]);
     const auto prep_start = std::chrono::steady_clock::now();
     const ContractionHierarchy ch = ContractionHierarchy::build(data.node_count, data.tail, data.head, data.weight);
     const auto prep_end = std::chrono::steady_clock::now();
     const auto prep_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(prep_end - prep_start).count();
+
+    ContractionHierarchyQuery oracle(ch);
+    for (auto& q : data.queries) {
+        oracle.reset().add_source(q.source).add_target(q.target).run();
+        const unsigned result = oracle.get_distance();
+        const bool reachable = result != inf_weight;
+        if (data.has_reference && (reachable != q.reachable || (reachable && result != q.reference))) {
+            std::cerr << "RoutingKit standard query disagrees with supplied reference\n";
+            return 1;
+        }
+        if (!data.has_reference) {
+            q.reference = result;
+            q.reachable = reachable;
+        }
+    }
 
     ContractionHierarchyQuery standard(ch);
     HCBSQuery hcbs(ch);
     auto standard_summary = benchmark_variant("routingkit-alternate", data, repeats, [&](const Query& q) {
         standard.reset().add_source(q.source).add_target(q.target).run();
         return standard.get_distance();
+    });
+    auto alternate = benchmark_variant("hcbs-reimplemented-alternate", data, repeats, [&](const Query& q) {
+        return hcbs.run(q.source, q.target, Scheduler::alternate);
     });
     auto lower_key = benchmark_variant("hcbs-lower-key", data, repeats, [&](const Query& q) {
         return hcbs.run(q.source, q.target, Scheduler::lower_key);
@@ -323,9 +347,6 @@ int main(int argc, char** argv) {
     });
     auto lower_key_queue = benchmark_variant("hcbs-lower-key-queue", data, repeats, [&](const Query& q) {
         return hcbs.run(q.source, q.target, Scheduler::lower_key_then_queue);
-    });
-    auto alternate = benchmark_variant("hcbs-reimplemented-alternate", data, repeats, [&](const Query& q) {
-        return hcbs.run(q.source, q.target, Scheduler::alternate);
     });
 
     std::cout << "hcbs-preprocess-ns=" << prep_ns << " queries=" << data.queries.size() << " repeats=" << repeats << "\n";
