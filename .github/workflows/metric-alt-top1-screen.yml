@@ -5,8 +5,6 @@ on:
     paths:
       - 'internal/search/**'
       - 'internal/bench/**'
-      - 'scripts/materialize_metric_alt_layout_sweep.py'
-      - 'scripts/materialize_metric_alt_top1.py'
       - 'scripts/ch_baseline.go'
       - '.github/workflows/metric-alt-top1-screen.yml'
 
@@ -27,10 +25,6 @@ jobs:
         with:
           go-version: '1.23.x'
           cache: true
-      - name: Materialize exact Aegis landmark references
-        run: |
-          python3 scripts/materialize_metric_alt_top1.py
-          gofmt -w internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go
       - name: Validate Aegis and CH adapter
         run: |
           set -euo pipefail
@@ -116,10 +110,9 @@ jobs:
               --order "$order" \
               --suite mixed \
               --seed 1010 \
-              --algorithms dijkstra,bidijkstra,astar,aegis,aegis-alt-top1 \
+              --algorithms dijkstra,bidijkstra,astar,aegis \
               --output "$run_dir/aegis.json" \
-              --html "" \
-              2> >(tee "$run_dir/aegis-preprocess.log" >&2)
+              --html ""
           done
       - name: Benchmark pinned Contraction Hierarchies comparator
         run: |
