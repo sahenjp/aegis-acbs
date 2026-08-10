@@ -5,6 +5,7 @@ on:
     paths:
       - 'scripts/export_hierarchy_interleaved.go'
       - 'scripts/hierarchy_interleaved_benchmark.cpp'
+      - 'scripts/materialize_hierarchy_interleaved.py'
       - '.github/workflows/hierarchy-interleaved-smoke.yml'
 
 concurrency:
@@ -28,6 +29,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 scripts/materialize_hierarchy_interleaved.py
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends zlib1g-dev g++ osmium-tool
           git clone https://github.com/RoutingKit/RoutingKit.git "$RUNNER_TEMP/RoutingKit"
