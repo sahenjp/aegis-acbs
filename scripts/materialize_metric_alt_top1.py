@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 
@@ -54,3 +55,7 @@ search = replace_once(
     "top1 algorithm dispatch",
 )
 search_path.write_text(search)
+
+# The scalar specialization preserves the exact top1 ranking and only removes
+# generic mask/source-row work from the one-landmark hot path.
+runpy.run_path("scripts/materialize_metric_alt_scalar1.py", run_name="__main__")
