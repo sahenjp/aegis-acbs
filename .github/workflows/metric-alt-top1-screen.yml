@@ -33,16 +33,21 @@ jobs:
           gofmt -w internal/search/acbs.go internal/search/search.go internal/search/metric_alt.go internal/search/metric_alt_test.go
       - name: Validate Aegis and CH adapter
         run: |
+          set -euo pipefail
           git diff --check
           go test ./...
           go vet ./...
           go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
           cp go.mod "$RUNNER_TEMP/go.mod.before"
-          cp go.sum "$RUNNER_TEMP/go.sum.before"
+          if [ -f go.sum ]; then cp go.sum "$RUNNER_TEMP/go.sum.before"; fi
           go get github.com/LdDl/ch@v1.10.0
           go run -tags chbaseline scripts/ch_baseline.go -h
           mv "$RUNNER_TEMP/go.mod.before" go.mod
-          mv "$RUNNER_TEMP/go.sum.before" go.sum
+          if [ -f "$RUNNER_TEMP/go.sum.before" ]; then
+            mv "$RUNNER_TEMP/go.sum.before" go.sum
+          else
+            rm -f go.sum
+          fi
       - name: Install Osmium
         run: |
           sudo apt-get update
@@ -120,7 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           cp go.mod "$RUNNER_TEMP/go.mod.before"
-          cp go.sum "$RUNNER_TEMP/go.sum.before"
+          if [ -f go.sum ]; then cp go.sum "$RUNNER_TEMP/go.sum.before"; fi
           go get github.com/LdDl/ch@v1.10.0
           for region in andorra bremen luxembourg tokyo; do
             run_dir="artifacts/ch-screen/$region"
@@ -133,7 +138,11 @@ jobs:
                 2> >(tee "$run_dir/ch.log" >&2)
           done
           mv "$RUNNER_TEMP/go.mod.before" go.mod
-          mv "$RUNNER_TEMP/go.sum.before" go.sum
+          if [ -f "$RUNNER_TEMP/go.sum.before" ]; then
+            mv "$RUNNER_TEMP/go.sum.before" go.sum
+          else
+            rm -f go.sum
+          fi
       - uses: actions/upload-artifact@v6
         if: always()
         with:
