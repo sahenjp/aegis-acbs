@@ -18,6 +18,18 @@ jobs:
         with:
           go-version: '1.26.x'
           cache: true
+      - name: Validate release tag provenance
+        shell: bash
+        run: |
+          expected_tag="v$(tr -d '\r\n' < VERSION)"
+          if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+            echo "::error::Refusing release: tag $GITHUB_REF_NAME does not match VERSION ($expected_tag)."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Refusing release: tagged commit is not reachable from main."
+            exit 1
+          fi
       - name: Check whether release already exists
         id: existing
         env:
