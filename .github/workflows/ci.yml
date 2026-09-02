@@ -85,3 +85,60 @@ jobs:
         run: bash -n scripts/*.sh
       - name: Python syntax
         run: python3 -m py_compile scripts/*.py
+
+  ch-adapter-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Compile and execute pinned CH comparator smoke
+        shell: bash
+        run: |
+          go get github.com/LdDl/ch@v1.10.0
+          go run -tags chbaseline scripts/ch_baseline.go -h
+          go run -tags chbaseline scripts/ch_baseline_smoke.go
+
+  ch-road-smoke:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Install Osmium and build Aegis
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osmium-tool
+          go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Build same-cost Andorra graph and reference queries
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 6 --retry-all-errors --retry-delay 2 \
+            https://download.geofabrik.de/europe/andorra-latest.osm.pbf \
+            -o "$RUNNER_TEMP/andorra.osm.pbf"
+          osmium cat "$RUNNER_TEMP/andorra.osm.pbf" -o "$RUNNER_TEMP/andorra.osm" --overwrite
+          "$RUNNER_TEMP/aegis" import-osm \
+            --input "$RUNNER_TEMP/andorra.osm" \
+            --output "$RUNNER_TEMP/andorra-time.aegis" \
+            --profile car --metric time
+          "$RUNNER_TEMP/aegis" benchmark \
+            --graph "$RUNNER_TEMP/andorra-time.aegis" \
+            --queries 300 --repeats 1 --order interleaved --suite mixed \
+            --seed 424242 --algorithms dijkstra,aegis \
+            --output "$RUNNER_TEMP/andorra-report.json" --html ""
+      - name: Replay identical query pairs through pinned CH
+        shell: bash
+        run: |
+          go get github.com/LdDl/ch@v1.10.0
+          go run -tags chbaseline scripts/ch_baseline.go \
+            --graph "$RUNNER_TEMP/andorra-time.aegis" \
+            --report "$RUNNER_TEMP/andorra-report.json" \
+            --repeats 3 \
+            --output "$RUNNER_TEMP/ch-andorra.json"
