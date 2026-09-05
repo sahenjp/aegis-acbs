@@ -17,31 +17,54 @@ import (
 	"github.com/lasder-ca/aegis-acbs/internal/search"
 )
 
-type routingKitMetadata struct {
-	PreprocessNS     int64  `json:"preprocessNs"`
-	Fingerprint      string `json:"fingerprint"`
+type routingKitCHMetadata struct {
+	PreprocessNS      int64  `json:"preprocessNs"`
+	Fingerprint       string `json:"fingerprint"`
+	SidecarGraphBytes int64  `json:"sidecarGraphBytes"`
+}
+
+type routingKitCCHMetadata struct {
+	OrderNS           int64  `json:"orderNs"`
+	TopologyNS        int64  `json:"topologyNs"`
+	CustomizeNS       int64  `json:"customizeNs"`
+	PreprocessNS      int64  `json:"preprocessNs"`
+	Fingerprint       string `json:"fingerprint"`
 	SidecarGraphBytes int64  `json:"sidecarGraphBytes"`
 }
 
 type output struct {
-	Report       maxsearch.BatchReport `json:"report"`
-	RoutingKitCH routingKitMetadata     `json:"routingKitCH"`
+	Report        maxsearch.BatchReport   `json:"report"`
+	RoutingKitCH  *routingKitCHMetadata   `json:"routingKitCH,omitempty"`
+	RoutingKitCCH *routingKitCCHMetadata  `json:"routingKitCCH,omitempty"`
 }
 
 func main() {
 	graphPath := flag.String("graph", "", "path to an Aegis graph")
 	queriesPath := flag.String("queries", "", "text file containing one 'source target' pair per line")
-	routingKitServer := flag.String("routingkit-ch-server", "", "RoutingKit CH sidecar binary")
-	routingKitGraph := flag.String("routingkit-ch-graph", "", "graph produced by aegis-routingkit-export")
-	algorithmsText := flag.String("algorithms", "routingkit-ch,bidijkstra,dijkstra", "comma-separated exact runner order")
+	routingKitCHServer := flag.String("routingkit-ch-server", "", "optional RoutingKit CH sidecar binary")
+	routingKitCHGraph := flag.String("routingkit-ch-graph", "", "graph produced by aegis-routingkit-export")
+	routingKitCCHServer := flag.String("routingkit-cch-server", "", "optional RoutingKit CCH sidecar binary")
+	routingKitCCHGraph := flag.String("routingkit-cch-graph", "", "graph produced by aegis-routingkit-cch-export")
+	algorithmsText := flag.String("algorithms", "", "comma-separated exact runner order; defaults to configured CCH, CH, bidijkstra, dijkstra")
 	consensus := flag.Bool("consensus", false, "require two successful exact runners to agree for every query")
 	verify := flag.Bool("verify", true, "validate every successful path")
 	summaryOnly := flag.Bool("summary-only", false, "omit per-query samples from JSON output")
 	timeout := flag.Duration("timeout", 10*time.Minute, "timeout for preprocessing and the complete batch")
 	flag.Parse()
-	if *graphPath == "" || *queriesPath == "" || *routingKitServer == "" || *routingKitGraph == "" {
+	if *graphPath == "" || *queriesPath == "" {
 		flag.Usage()
 		os.Exit(2)
+	}
+	if (*routingKitCHServer == "") != (*routingKitCHGraph == "") {
+		fatal(errors.New("--routingkit-ch-server and --routingkit-ch-graph must be provided together"))
+	}
+	if (*routingKitCCHServer == "") != (*routingKitCCHGraph == "") {
+		fatal(errors.New("--routingkit-cch-server and --routingkit-cch-graph must be provided together"))
+	}
+	useCH := *routingKitCHServer != ""
+	useCCH := *routingKitCCHServer != ""
+	if !useCH && !useCCH {
+		fatal(errors.New("configure at least one RoutingKit CH or CCH sidecar for persistent batch mode"))
 	}
 
 	g, err := graph.Load(*graphPath)
@@ -54,19 +77,40 @@ func main() {
 	}
 	algorithms := parseAlgorithms(*algorithmsText)
 	if len(algorithms) == 0 {
-		fatal(errors.New("at least one algorithm is required"))
-	}
-	if !containsAlgorithm(algorithms, maxsearch.RoutingKitCH) {
-		algorithms = append([]search.Algorithm{maxsearch.RoutingKitCH}, algorithms...)
+		if useCCH {
+			algorithms = append(algorithms, maxsearch.RoutingKitCCH)
+		}
+		if useCH {
+			algorithms = append(algorithms, maxsearch.RoutingKitCH)
+		}
+		algorithms = append(algorithms, search.BiDijkstra, search.Dijkstra)
+	} else {
+		if containsAlgorithm(algorithms, maxsearch.RoutingKitCCH) && !useCCH {
+			fatal(errors.New("routingkit-cch selected without a configured CCH sidecar"))
+		}
+		if containsAlgorithm(algorithms, maxsearch.RoutingKitCH) && !useCH {
+			fatal(errors.New("routingkit-ch selected without a configured CH sidecar"))
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	ch, err := maxsearch.NewRoutingKitCHRunner(ctx, *routingKitServer, *routingKitGraph, g)
-	if err != nil {
-		fatal(err)
+	var cch *maxsearch.RoutingKitCCHRunner
+	if useCCH {
+		cch, err = maxsearch.NewRoutingKitCCHRunner(ctx, *routingKitCCHServer, *routingKitCCHGraph, g)
+		if err != nil {
+			fatal(err)
+		}
+		defer func() { _ = cch.Close() }()
 	}
-	defer func() { _ = ch.Close() }()
+	var ch *maxsearch.RoutingKitCHRunner
+	if useCH {
+		ch, err = maxsearch.NewRoutingKitCHRunner(ctx, *routingKitCHServer, *routingKitCHGraph, g)
+		if err != nil {
+			fatal(err)
+		}
+		defer func() { _ = ch.Close() }()
+	}
 
 	runners := make([]maxsearch.Runner, 0, len(algorithms))
 	seen := make(map[search.Algorithm]struct{}, len(algorithms))
@@ -75,9 +119,18 @@ func main() {
 			continue
 		}
 		seen[algorithm] = struct{}{}
-		if algorithm == maxsearch.RoutingKitCH {
+		switch algorithm {
+		case maxsearch.RoutingKitCCH:
+			if cch == nil {
+				fatal(errors.New("routingkit-cch selected without a configured CCH sidecar"))
+			}
+			runners = append(runners, cch)
+		case maxsearch.RoutingKitCH:
+			if ch == nil {
+				fatal(errors.New("routingkit-ch selected without a configured CH sidecar"))
+			}
 			runners = append(runners, ch)
-		} else {
+		default:
 			runners = append(runners, maxsearch.BuiltinRunner{Algorithm: algorithm})
 		}
 	}
@@ -85,9 +138,8 @@ func main() {
 		fatal(errors.New("consensus requires at least two runners"))
 	}
 
-	// Efficient mode is deliberate: queries run sequentially and CH is always
-	// allowed to finish before a fallback starts, so the persistent sidecar is
-	// not cancelled by a faster competing runner and can be reused safely.
+	// Efficient mode is deliberate: each stateful sidecar is allowed to finish
+	// before another runner starts, so preprocessing is reused across the batch.
 	cfg := maxsearch.Config{
 		Mode:        maxsearch.ModeEfficient,
 		MaxParallel: 1,
@@ -102,17 +154,31 @@ func main() {
 	if *summaryOnly {
 		report.Samples = nil
 	}
-	info, err := os.Stat(*routingKitGraph)
-	if err != nil {
-		fatal(err)
-	}
-	result := output{
-		Report: report,
-		RoutingKitCH: routingKitMetadata{
+	result := output{Report: report}
+	if ch != nil {
+		info, err := os.Stat(*routingKitCHGraph)
+		if err != nil {
+			fatal(err)
+		}
+		result.RoutingKitCH = &routingKitCHMetadata{
 			PreprocessNS:      ch.PreprocessDuration().Nanoseconds(),
 			Fingerprint:       ch.Fingerprint(),
 			SidecarGraphBytes: info.Size(),
-		},
+		}
+	}
+	if cch != nil {
+		info, err := os.Stat(*routingKitCCHGraph)
+		if err != nil {
+			fatal(err)
+		}
+		result.RoutingKitCCH = &routingKitCCHMetadata{
+			OrderNS:           cch.OrderDuration().Nanoseconds(),
+			TopologyNS:        cch.TopologyDuration().Nanoseconds(),
+			CustomizeNS:       cch.CustomizeDuration().Nanoseconds(),
+			PreprocessNS:      cch.PreprocessDuration().Nanoseconds(),
+			Fingerprint:       cch.Fingerprint(),
+			SidecarGraphBytes: info.Size(),
+		}
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -163,6 +229,9 @@ func readQueries(path string) ([]maxsearch.BatchQuery, error) {
 }
 
 func parseAlgorithms(text string) []search.Algorithm {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
 	parts := strings.Split(text, ",")
 	out := make([]search.Algorithm, 0, len(parts))
 	for _, part := range parts {
