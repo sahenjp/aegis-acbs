@@ -1,45 +1,104 @@
 # Aegis Max Exact
 
-`research/aegis-max-exact` は、既存の厳密最短路実装を置き換えずに、複数の厳密解法をポートフォリオとして競争させる研究ブランチです。
+`research/aegis-max-exact` は、既存の厳密最短路実装を置き換えず、入力ごとの相性差と長いテールを複数の厳密解法で吸収する研究ブランチです。
 
-## 狙い
+## 設計
 
-単一アルゴリズムの平均値だけでなく、クエリごとの相性差と長いテールを吸収することを狙います。最初の候補は既存の `search.Select` で選び、続いて ACBS、A*、双方向 Dijkstra など、条件を満たす厳密解法を候補に加えます。
+Aegis Max はまず既存の `search.Select` と `search.Explain` から第一候補を決めます。その次に、第一候補と探索形状が異なる古典的厳密解法を hedge として置き、ACBS と残りの厳密解法を fallback にします。
 
-`HedgeDelay=0` では複数候補をすぐ開始してレイテンシを優先します。正の遅延を与えると、第一候補が速く終わる通常ケースでは余分な計算を避けつつ、遅いクエリだけ追加候補を起動できます。
+代表的な順序は次のようになります。
 
-## 正確性
-
-各候補は既存の厳密解法です。勝者は `search.Validate` を通過してから返せます。ポートフォリオは探索順や起動方法を変えるだけで、個々の解法の停止条件や下界証明を変更しません。
-
-このブランチは「常に最速」を主張しません。並列実行は CPU とメモリを追加で使うため、単発レイテンシ、p95/p99、スループット、総仕事量を分けて評価する必要があります。
-
-## 実行
-
-```bash
-go build -o bin/aegis-max ./cmd/aegis-max
-
-bin/aegis-max \
-  --graph path/to/graph.aegis \
-  --source 100 \
-  --target 200 \
-  --parallel 3 \
-  --hedge-delay 0 \
-  --verify
+```text
+A* が第一候補       : A* -> 双方向 Dijkstra -> ACBS -> Dijkstra
+双方向 Dijkstra     : BiDijkstra -> A* または Dijkstra -> ACBS -> ...
+Dijkstra            : Dijkstra -> BiDijkstra -> ACBS -> ...
 ```
 
-出力には候補一覧、実際に終了した試行、勝者、既存の `search.Result` が含まれます。
+固定順を「常に最速」とは扱いません。selector の予測仕事量も plan に保存し、後から実測と比較できるようにしています。
+
+## 三つの実行モード
+
+### latency
+
+最大 `--parallel` 本をすぐ起動し、最初に正しい厳密解を返した runner を採用します。単発レイテンシと p95/p99 を優先する代わりに、CPU とメモリを追加で使います。
+
+```bash
+bin/aegis-max --graph graph.aegis --source 100 --target 200 \
+  --mode latency --parallel 3
+```
+
+### balanced
+
+第一候補だけを開始し、`--hedge-delay` を超えても終わらない場合に次の候補を起動します。通常ケースの余分な仕事を抑えつつ、遅いクエリだけ hedge するためのモードです。delay はハードウェア・グラフ依存なので自動で決めず、明示指定を要求します。
+
+```bash
+bin/aegis-max --graph graph.aegis --source 100 --target 200 \
+  --mode balanced --parallel 2 --hedge-delay 2ms
+```
+
+### efficient
+
+一度に一つだけ実行します。第一候補が失敗した場合だけ次へ進みます。スループットや省メモリを優先するときの比較基準です。
+
+```bash
+bin/aegis-max --graph graph.aegis --source 100 --target 200 \
+  --mode efficient
+```
+
+## 検証と合意
+
+`--verify` は成功した経路を `search.Validate` で再検証します。
+
+さらに新しい runner を導入するときは `--consensus` を使えます。最初の成功だけでは返さず、別の厳密 runner が到達可能性と距離に同意するまで待ちます。二つの runner が異なる距離を返した場合は成功扱いにせずエラーにします。
+
+これは一般の最適性証明を二重化する万能手段ではありません。既存 runner はそれぞれのアルゴリズム側で厳密性を保証し、consensus は統合時の追加検査として使います。
+
+## 外部 runner
+
+`RunWithRunners` を追加しています。新しい解法は `Runner` interface を実装すれば、`search.Run` の組み込み case を変更せずポートフォリオ層へ接続できます。
+
+```go
+type Runner interface {
+    Name() search.Algorithm
+    Run(context.Context, *graph.Graph, int, int) (search.Result, error)
+}
+```
+
+この入口は、既存の研究ブランチにある CH/CCH 系、別言語 sidecar、将来の新しい厳密最短路アルゴリズムを比較するためのものです。統合前には必ず同じ graph、query pair、検証器で測定します。
+
+## plan の確認
+
+実行せず候補順と selector の説明だけ確認できます。
+
+```bash
+bin/aegis-max --graph graph.aegis --source 100 --target 200 --plan-only
+```
+
+実験で順序を固定したい場合は、組み込みアルゴリズムを明示できます。
+
+```bash
+bin/aegis-max --graph graph.aegis --source 100 --target 200 \
+  --algorithms astar,bidijkstra,aegis
+```
+
+## P = NP との関係
+
+道路の非負重み最短路はすでに P に属するため、`P = NP` が証明されてもこの問題の計算量クラス自体が変わるわけではありません。
+
+ただし、将来より強い最短路アルゴリズム、前処理法、ハードウェア特化実装が現れた場合でも、runner interface により既存実装と同じ検証・計測条件へ差し込めます。未知の将来アルゴリズムに対する「永遠の最速」は保証できませんが、交換可能なポートフォリオ層にすることで陳腐化しにくくしています。
+
+P vs NP を直接扱う研究は `research/complexity-lab` に分離しています。
 
 ## 採用ゲート
 
-本線へ入れる前に、少なくとも次を固定してから測定します。
+本線へ入れる前に、結果を見る前に比較条件を固定します。
 
-1. Dijkstra との距離一致を維持する。
-2. 同一クエリ集合・複数 seed・複数 graph で比較する。
-3. median だけでなく p95/p99 と最大ペナルティを見る。
-4. CPU 時間、expanded、relaxed、割り当て量、RSS を併記する。
-5. 低レイテンシ設定と省資源設定を別物として扱う。
+1. Dijkstra との到達可能性・距離一致を維持する。
+2. 同一 query pair を複数 seed・複数 graph で使用する。
+3. median だけでなく p95、p99、最大ペナルティを比較する。
+4. wall time と同時に CPU 使用量、expanded、relaxed、割り当て量、RSS を測る。
+5. latency / balanced / efficient を別設定として報告する。
+6. 前処理型 runner を追加する場合は preprocessing time と index size を含める。
+7. 既存の CH/CCH 等の強い baseline と比較してから「強い」と判断する。
 
-## 将来の位置づけ
-
-新しい厳密解法が発見された場合は候補として追加できます。仮に計算量理論上の大きな突破が起きても、実際の性能は定数、前処理、メモリ階層、並列性、入力分布に依存するため、ポートフォリオ層は比較・移行・フォールバックの場所として残せます。ただし、未知の将来アルゴリズムに対して「最強」を保証するものではありません。
+現在のブランチは、強い比較を可能にする実装基盤です。独立した大規模ベンチ結果が出る前に「常に最速」「世界最速」とは主張しません。
