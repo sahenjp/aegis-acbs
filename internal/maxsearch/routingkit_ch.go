@@ -1,0 +1,206 @@
+package maxsearch
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/lasder-ca/aegis-acbs/internal/graph"
+	"github.com/lasder-ca/aegis-acbs/internal/search"
+)
+
+const RoutingKitCH search.Algorithm = "routingkit-ch"
+
+type RoutingKitCHRunner struct {
+	mu           sync.Mutex
+	cmd          *exec.Cmd
+	stdin        *bufio.Writer
+	stdout       *bufio.Reader
+	stderr       bytes.Buffer
+	closed       bool
+	preprocessNS int64
+}
+
+// NewRoutingKitCHRunner starts a persistent RoutingKit CH process and waits for
+// preprocessing to finish. The graph file must be created by
+// cmd/aegis-routingkit-export from the same Aegis graph used for queries.
+func NewRoutingKitCHRunner(ctx context.Context, binary, graphPath string) (*RoutingKitCHRunner, error) {
+	if strings.TrimSpace(binary) == "" || strings.TrimSpace(graphPath) == "" {
+		return nil, errors.New("maxsearch: RoutingKit CH binary and graph are required")
+	}
+	cmd := exec.CommandContext(ctx, binary, graphPath)
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	runner := &RoutingKitCHRunner{
+		cmd:    cmd,
+		stdin:  bufio.NewWriterSize(stdinPipe, 64<<10),
+		stdout: bufio.NewReaderSize(stdoutPipe, 1<<20),
+	}
+	cmd.Stderr = &runner.stderr
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	line, err := runner.stdout.ReadString('\n')
+	if err != nil {
+		_ = cmd.Wait()
+		return nil, runner.protocolError("read READY", err)
+	}
+	fields := strings.Fields(line)
+	if len(fields) != 2 || fields[0] != "READY" {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, runner.protocolError("invalid READY response", nil)
+	}
+	preprocessNS, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || preprocessNS < 1 {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, runner.protocolError("invalid preprocessing duration", err)
+	}
+	runner.preprocessNS = preprocessNS
+	return runner, nil
+}
+
+func (r *RoutingKitCHRunner) Name() search.Algorithm { return RoutingKitCH }
+
+func (r *RoutingKitCHRunner) PreprocessDuration() time.Duration {
+	return time.Duration(r.preprocessNS)
+}
+
+func (r *RoutingKitCHRunner) Run(ctx context.Context, g *graph.Graph, source, target int) (search.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return search.Result{}, err
+	}
+	if source < 0 || source >= len(g.Nodes) || target < 0 || target >= len(g.Nodes) {
+		return search.Result{}, errors.New("maxsearch: source or target is out of range")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return search.Result{}, errors.New("maxsearch: RoutingKit CH runner is closed")
+	}
+	if _, err := fmt.Fprintf(r.stdin, "Q %d %d\n", source, target); err != nil {
+		return search.Result{}, r.protocolError("write query", err)
+	}
+	if err := r.stdin.Flush(); err != nil {
+		return search.Result{}, r.protocolError("flush query", err)
+	}
+	line, err := r.stdout.ReadString('\n')
+	if err != nil {
+		return search.Result{}, r.protocolError("read query result", err)
+	}
+	result, err := parseRoutingKitCHResponse(line, len(g.Nodes))
+	if err != nil {
+		return search.Result{}, r.protocolError("parse query result", err)
+	}
+	if result.Stats.Reachable && !search.Validate(g, source, target, result) {
+		return search.Result{}, errors.New("maxsearch: RoutingKit CH returned an invalid path")
+	}
+	return result, nil
+}
+
+func (r *RoutingKitCHRunner) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil
+	}
+	r.closed = true
+	_, writeErr := fmt.Fprintln(r.stdin, "X")
+	flushErr := r.stdin.Flush()
+	waitErr := r.cmd.Wait()
+	if writeErr != nil {
+		return writeErr
+	}
+	if flushErr != nil {
+		return flushErr
+	}
+	if waitErr != nil {
+		return r.protocolError("wait for RoutingKit CH server", waitErr)
+	}
+	return nil
+}
+
+func (r *RoutingKitCHRunner) protocolError(stage string, err error) error {
+	message := strings.TrimSpace(r.stderr.String())
+	switch {
+	case err != nil && message != "":
+		return fmt.Errorf("maxsearch: RoutingKit CH %s: %s: %w", stage, message, err)
+	case err != nil:
+		return fmt.Errorf("maxsearch: RoutingKit CH %s: %w", stage, err)
+	case message != "":
+		return fmt.Errorf("maxsearch: RoutingKit CH %s: %s", stage, message)
+	default:
+		return fmt.Errorf("maxsearch: RoutingKit CH %s", stage)
+	}
+}
+
+func parseRoutingKitCHResponse(line string, nodeCount int) (search.Result, error) {
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return search.Result{}, errors.New("short response")
+	}
+	switch fields[0] {
+	case "U":
+		if len(fields) != 2 {
+			return search.Result{}, errors.New("invalid unreachable response")
+		}
+		duration, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil || duration < 1 {
+			return search.Result{}, errors.New("invalid duration")
+		}
+		return search.Result{Stats: search.Stats{Algorithm: RoutingKitCH, DurationNS: duration, Reachable: false}}, nil
+	case "R":
+		if len(fields) < 5 {
+			return search.Result{}, errors.New("invalid reachable response")
+		}
+		distance, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			return search.Result{}, errors.New("invalid distance")
+		}
+		duration, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil || duration < 1 {
+			return search.Result{}, errors.New("invalid duration")
+		}
+		pathLen, err := strconv.Atoi(fields[3])
+		if err != nil || pathLen < 1 || len(fields) != 4+pathLen {
+			return search.Result{}, errors.New("invalid path length")
+		}
+		path := make([]int, pathLen)
+		for i := range path {
+			node, err := strconv.Atoi(fields[4+i])
+			if err != nil || node < 0 || node >= nodeCount {
+				return search.Result{}, errors.New("invalid path node")
+			}
+			path[i] = node
+		}
+		return search.Result{
+			Path: path,
+			Stats: search.Stats{
+				Algorithm: RoutingKitCH,
+				DurationNS: duration,
+				Distance:   distance,
+				Reachable:  true,
+				PathNodes:  pathLen,
+			},
+		}, nil
+	case "E":
+		return search.Result{}, fmt.Errorf("server error: %s", strings.Join(fields[1:], " "))
+	default:
+		return search.Result{}, errors.New("unknown response type")
+	}
+}
