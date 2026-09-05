@@ -3,7 +3,7 @@
 <h1>aegis</h1>
 <p><strong>ACBS</strong></p>
 
-**共有する下界を使い、最短性を保ちながら進める双方向経路探索。**
+**最短性を保つ双方向経路探索。**
 
 <sub>道路グラフ向け研究CLI · OSM / DIMACS · JSON / CSV / 単体HTMLレポート</sub>
 
