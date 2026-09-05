@@ -2,6 +2,8 @@ package maxsearch
 
 import (
 	"testing"
+
+	"github.com/lasder-ca/aegis-acbs/internal/graph"
 )
 
 func TestParseRoutingKitCHReachable(t *testing.T) {
@@ -37,5 +39,30 @@ func TestParseRoutingKitCHRejectsBadPath(t *testing.T) {
 		if _, err := parseRoutingKitCHResponse(response, 3); err == nil {
 			t.Fatalf("accepted %q", response)
 		}
+	}
+}
+
+func TestRoutingKitGraphFingerprintIsStableAndWeightSensitive(t *testing.T) {
+	build := func(cost uint64) *graph.Graph {
+		g := graph.New("fixture", "test", "car", graph.MetricDistance)
+		g.Nodes = []graph.Node{{ID: 1}, {ID: 2}}
+		g.Adj = [][]graph.Edge{{{To: 1, Cost: cost}}, {}}
+		if err := g.Finalize(); err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	a := build(7)
+	b := build(7)
+	c := build(8)
+	fa := RoutingKitGraphFingerprint(a)
+	if len(fa) != 64 {
+		t.Fatalf("fingerprint length=%d want=64", len(fa))
+	}
+	if fa != RoutingKitGraphFingerprint(b) {
+		t.Fatal("equivalent graphs produced different fingerprints")
+	}
+	if fa == RoutingKitGraphFingerprint(c) {
+		t.Fatal("edge-weight change did not change the fingerprint")
 	}
 }
