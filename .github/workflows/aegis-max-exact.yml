@@ -82,7 +82,7 @@ jobs:
           go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
           go build -o "$RUNNER_TEMP/aegis-max" ./cmd/aegis-max
           go build -o "$RUNNER_TEMP/aegis-routingkit-export" ./cmd/aegis-routingkit-export
-      - name: Export identical Hatfield graph
+      - name: Export identical Hatfield graph and choose a reachable pair
         shell: bash
         run: |
           set -euo pipefail
@@ -93,6 +93,22 @@ jobs:
           "$RUNNER_TEMP/aegis-routingkit-export" \
             --graph "$RUNNER_TEMP/hatfield.aegis" \
             --output "$RUNNER_TEMP/hatfield.routingkit-ch"
+          python3 - <<'PY'
+          import os
+          p = os.path.join(os.environ['RUNNER_TEMP'], 'hatfield.routingkit-ch')
+          lines = open(p, encoding='utf-8').read().splitlines()
+          if len(lines) < 4:
+              raise SystemExit('RoutingKit export did not contain an edge')
+          node_count, edge_count = map(int, lines[2].split())
+          if edge_count < 1:
+              raise SystemExit('RoutingKit export contains no edges')
+          source, target, _ = map(int, lines[3].split())
+          if source == target or not (0 <= source < node_count and 0 <= target < node_count):
+              raise SystemExit('first exported edge is invalid')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env:
+              env.write(f'CH_SOURCE={source}\nCH_TARGET={target}\n')
+          print(f'using guaranteed reachable directed edge {source}->{target}')
+          PY
       - name: Verify CH path and portfolio consensus
         shell: bash
         run: |
@@ -100,14 +116,14 @@ jobs:
           export LD_LIBRARY_PATH="$RUNNER_TEMP/RoutingKit/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           "$RUNNER_TEMP/aegis-max" \
             --graph "$RUNNER_TEMP/hatfield.aegis" \
-            --source 0 --target 10 --mode efficient --verify \
+            --source "$CH_SOURCE" --target "$CH_TARGET" --mode efficient --verify \
             --algorithms routingkit-ch \
             --routingkit-ch-server "$RUNNER_TEMP/aegis-routingkit-ch-server" \
             --routingkit-ch-graph "$RUNNER_TEMP/hatfield.routingkit-ch" \
             > "$RUNNER_TEMP/ch-only.json"
           "$RUNNER_TEMP/aegis-max" \
             --graph "$RUNNER_TEMP/hatfield.aegis" \
-            --source 0 --target 10 --mode latency --parallel 2 --verify --consensus \
+            --source "$CH_SOURCE" --target "$CH_TARGET" --mode latency --parallel 2 --verify --consensus \
             --algorithms routingkit-ch,bidijkstra \
             --routingkit-ch-server "$RUNNER_TEMP/aegis-routingkit-ch-server" \
             --routingkit-ch-graph "$RUNNER_TEMP/hatfield.routingkit-ch" \
@@ -135,13 +151,13 @@ jobs:
           python3 - <<'PY'
           import os
           p = os.path.join(os.environ['RUNNER_TEMP'], 'bad.routingkit-ch')
-          lines = open(p).read().splitlines()
+          lines = open(p, encoding='utf-8').read().splitlines()
           lines[1] = '0' * 64
-          open(p, 'w').write('\n'.join(lines) + '\n')
+          open(p, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
           PY
           if "$RUNNER_TEMP/aegis-max" \
             --graph "$RUNNER_TEMP/hatfield.aegis" \
-            --source 0 --target 10 --mode efficient --verify \
+            --source "$CH_SOURCE" --target "$CH_TARGET" --mode efficient --verify \
             --algorithms routingkit-ch \
             --routingkit-ch-server "$RUNNER_TEMP/aegis-routingkit-ch-server" \
             --routingkit-ch-graph "$RUNNER_TEMP/bad.routingkit-ch"; then
