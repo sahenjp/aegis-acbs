@@ -75,7 +75,7 @@ bin/aegis-routingkit-export \
 
 export 時には、ノード数・辺数・`from/to/cost` を SHA-256 へ入れた graph fingerprint を保存します。sidecar 起動時に Aegis 側でも同じ fingerprint を計算し、異なる graph や古い index を誤って使った場合は query 前に拒否します。問い合わせごとに全辺を再ハッシュすることはせず、起動時の照合後は同じ `*graph.Graph` instance であることだけを確認します。
 
-### 実行
+### 単発実行
 
 ```bash
 bin/aegis-max \
@@ -90,6 +90,42 @@ bin/aegis-max \
 
 CH が到達可能な結果を返した場合でも、復元された node path を Aegis の元 graph 上で再評価し、辺の連続性と合計 cost が報告距離に一致することを確認してから採用します。出力の `routingKitCH.preprocessNs` に CH 構築時間、`routingKitCH.fingerprint` に照合済み graph identity を残します。
 
+### 多数 query で前処理を再利用
+
+`aegis-max-batch` は一つの CH sidecar を起動したまま、複数の query pair を順番に処理します。query file は空白区切りの node index です。
+
+```text
+# queries.txt
+100 200
+300 410
+512 920
+```
+
+```bash
+go build -o bin/aegis-max-batch ./cmd/aegis-max-batch
+
+bin/aegis-max-batch \
+  --graph graph.aegis \
+  --queries queries.txt \
+  --routingkit-ch-server bin/aegis-routingkit-ch-server \
+  --routingkit-ch-graph graph.routingkit-ch \
+  --algorithms routingkit-ch,bidijkstra,dijkstra \
+  --verify --consensus
+```
+
+batch は stateful sidecar を query 間で安全に再利用するため `efficient` 相当の逐次 portfolio を使います。CH が到達可能な場合は CH の経路を検証したあと native runner と距離を照合できます。CH が `U` を返した場合は CH を成功とは数えず、native `uint64` runner へ進みます。`--consensus` を使って到達不能も二重確認したい場合、既定の `routingkit-ch,bidijkstra,dijkstra` のように native runner を二つ以上残しておくと、CH が成功できないケースでも二つの native 解法で合意できます。
+
+batch JSON は次を分離して記録します。
+
+- `routingKitCH.preprocessNs`: 一度だけ払った CH 構築時間
+- `routingKitCH.sidecarGraphBytes`: sidecar 入力 graph のサイズ
+- `report.summary.meanNs / p50Ns / p95Ns / p99Ns / maxNs`: 前処理後の portfolio query 時間
+- `winnerCounts`: 各 runner が最初の正しい結果になった回数
+- `nativeFallbacks`: CH 以外へ fallback した query 数
+- `consensusReached`: 二つの厳密 runner が一致した query 数
+
+`--summary-only` で per-query sample を省略できます。
+
 ### 31-bit 距離上限
 
 現在固定している RoutingKit の CH は有限距離に `inf_weight = 2^31-1` を使います。一方 Aegis の OSM distance metric はミリメートル単位なので、単純換算では約 2147 km がこの有限値上限になります。Aegis 自体は `uint64` cost を使うため、この差を無視すると本当は非常に長い経路が存在するケースを RoutingKit が到達不能として返す可能性があります。
@@ -98,7 +134,9 @@ CH が到達可能な結果を返した場合でも、復元された node path 
 
 ### 前処理の評価
 
-現在の単発 CLI 実行では sidecar を起動するたび CH を構築するため、単一 query の wall time だけで CH の優位性を評価してはいけません。前処理型アルゴリズムの性能比較では、少なくとも以下を分けて報告します。
+単発 CLI 実行では sidecar を起動するたび CH を構築するため、単一 query の wall time だけで CH の優位性を評価してはいけません。`aegis-max-batch` のように前処理を再利用した測定と分けます。
+
+前処理型アルゴリズムの性能比較では、少なくとも以下を報告します。
 
 - CH preprocessing time
 - index / process memory
@@ -106,8 +144,6 @@ CH が到達可能な結果を返した場合でも、復元された node path 
 - 前処理を何 query で償却するか
 - p50 / p95 / p99
 - native exact runner との正確性一致率
-
-長寿命 server や batch workload では同じ CH instance を複数 query に再利用する設計を前提にします。
 
 ## 外部 runner
 
