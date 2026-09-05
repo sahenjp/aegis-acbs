@@ -32,6 +32,7 @@ type RoutingKitCHRunner struct {
 	closed       bool
 	preprocessNS int64
 	fingerprint  string
+	graph        *graph.Graph
 }
 
 // RoutingKitGraphFingerprint binds a sidecar graph to the exact node-indexed
@@ -82,6 +83,7 @@ func NewRoutingKitCHRunner(ctx context.Context, binaryPath, graphPath string, g 
 		stdin:       bufio.NewWriterSize(stdinPipe, 64<<10),
 		stdout:      bufio.NewReaderSize(stdoutPipe, 1<<20),
 		fingerprint: expectedFingerprint,
+		graph:       g,
 	}
 	cmd.Stderr = &runner.stderr
 	if err := cmd.Start(); err != nil {
@@ -128,8 +130,8 @@ func (r *RoutingKitCHRunner) Run(ctx context.Context, g *graph.Graph, source, ta
 	if source < 0 || source >= len(g.Nodes) || target < 0 || target >= len(g.Nodes) {
 		return search.Result{}, errors.New("maxsearch: source or target is out of range")
 	}
-	if RoutingKitGraphFingerprint(g) != r.fingerprint {
-		return search.Result{}, errors.New("maxsearch: RoutingKit CH runner used with a different Aegis graph")
+	if g != r.graph {
+		return search.Result{}, errors.New("maxsearch: RoutingKit CH runner used with a different Aegis graph instance")
 	}
 
 	r.mu.Lock()
