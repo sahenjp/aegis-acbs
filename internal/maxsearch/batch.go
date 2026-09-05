@@ -31,14 +31,20 @@ type BatchSummary struct {
 	Queries          int                      `json:"queries"`
 	Reachable        int                      `json:"reachable"`
 	ConsensusReached int                      `json:"consensusReached"`
-	NativeFallbacks  int                      `json:"nativeFallbacks"`
-	WinnerCounts     map[search.Algorithm]int `json:"winnerCounts"`
-	TotalQueryNS     int64                    `json:"totalQueryNs"`
-	MeanNS           int64                    `json:"meanNs"`
-	P50NS            int64                    `json:"p50Ns"`
-	P95NS            int64                    `json:"p95Ns"`
-	P99NS            int64                    `json:"p99Ns"`
-	MaxNS            int64                    `json:"maxNs"`
+	// NativeFallbacks is retained for compatibility with the original CH/CCH
+	// batch reports. It means "winner was not RoutingKit CH/CCH" and therefore
+	// also counts a native-Go preprocessed runner such as ALT.
+	NativeFallbacks int                      `json:"nativeFallbacks"`
+	Primary         search.Algorithm         `json:"primary"`
+	PrimaryWins     int                      `json:"primaryWins"`
+	Fallbacks       int                      `json:"fallbacks"`
+	WinnerCounts    map[search.Algorithm]int `json:"winnerCounts"`
+	TotalQueryNS    int64                    `json:"totalQueryNs"`
+	MeanNS          int64                    `json:"meanNs"`
+	P50NS           int64                    `json:"p50Ns"`
+	P95NS           int64                    `json:"p95Ns"`
+	P99NS           int64                    `json:"p99Ns"`
+	MaxNS           int64                    `json:"maxNs"`
 }
 
 type BatchReport struct {
@@ -48,10 +54,11 @@ type BatchReport struct {
 }
 
 // RunBatch executes query pairs sequentially while reusing the supplied Runner
-// instances. This is important for preprocessing-based solvers such as CH/CCH:
-// the expensive index is built once and its query cost can then be measured over
-// a realistic workload. ModeEfficient is recommended for stateful sidecars so a
-// competing runner cannot cancel a sidecar that should be reused later.
+// instances. This is important for preprocessing-based solvers such as CH/CCH
+// and ALT: the expensive index is built once and its query cost can then be
+// measured over a realistic workload. ModeEfficient is recommended for
+// stateful sidecars so a competing runner cannot cancel a sidecar that should
+// be reused later.
 func RunBatch(ctx context.Context, g *graph.Graph, queries []BatchQuery, cfg Config, runners []Runner) (BatchReport, error) {
 	if g == nil || len(g.Nodes) == 0 {
 		return BatchReport{}, errors.New("maxsearch: batch requires a non-empty graph")
@@ -63,10 +70,11 @@ func RunBatch(ctx context.Context, g *graph.Graph, queries []BatchQuery, cfg Con
 		return BatchReport{}, errors.New("maxsearch: batch requires at least one runner")
 	}
 
+	primary := runners[0].Name()
 	started := time.Now()
 	report := BatchReport{
 		Samples: make([]BatchSample, 0, len(queries)),
-		Summary: BatchSummary{WinnerCounts: make(map[search.Algorithm]int)},
+		Summary: BatchSummary{Primary: primary, WinnerCounts: make(map[search.Algorithm]int)},
 	}
 	durations := make([]int64, 0, len(queries))
 	var total float64
@@ -110,6 +118,11 @@ func RunBatch(ctx context.Context, g *graph.Graph, queries []BatchQuery, cfg Con
 		}
 		if sample.Winner != RoutingKitCH && sample.Winner != RoutingKitCCH {
 			report.Summary.NativeFallbacks++
+		}
+		if sample.Winner == primary {
+			report.Summary.PrimaryWins++
+		} else {
+			report.Summary.Fallbacks++
 		}
 		report.Summary.WinnerCounts[sample.Winner]++
 		durations = append(durations, durationNS)
