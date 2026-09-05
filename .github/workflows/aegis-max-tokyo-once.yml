@@ -1,0 +1,165 @@
+name: Aegis Max Tokyo Once
+
+on:
+  push:
+    branches: [research/aegis-max-exact]
+    paths: ['.github/workflows/aegis-max-tokyo-once.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  tokyo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      ROUTINGKIT_COMMIT: 54d49bb0cdea56dde182357522e4e86a03c57852
+      QUERIES: '300'
+      ALT_LANDMARKS: '8'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Build dependencies and tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ zlib1g-dev osmium-tool curl
+          git clone https://github.com/RoutingKit/RoutingKit.git "$RUNNER_TEMP/RoutingKit"
+          git -C "$RUNNER_TEMP/RoutingKit" checkout "$ROUTINGKIT_COMMIT"
+          make -C "$RUNNER_TEMP/RoutingKit" -j"$(nproc)"
+          bash scripts/build-routingkit-ch-server.sh "$RUNNER_TEMP/RoutingKit" "$RUNNER_TEMP/aegis-routingkit-ch-server"
+          bash scripts/build-routingkit-cch-server.sh "$RUNNER_TEMP/RoutingKit" "$RUNNER_TEMP/aegis-routingkit-cch-server"
+          go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+          go build -o "$RUNNER_TEMP/aegis-max-batch" ./cmd/aegis-max-batch
+          go build -o "$RUNNER_TEMP/aegis-routingkit-export" ./cmd/aegis-routingkit-export
+          go build -o "$RUNNER_TEMP/aegis-routingkit-cch-export" ./cmd/aegis-routingkit-cch-export
+      - name: Download Tokyo and build road graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 6 --retry-all-errors --retry-delay 2 \
+            https://download.bbbike.org/osm/bbbike/Tokyo/Tokyo.osm.pbf \
+            -o "$RUNNER_TEMP/tokyo.osm.pbf"
+          osmium tags-filter "$RUNNER_TEMP/tokyo.osm.pbf" w/highway \
+            -o "$RUNNER_TEMP/roads.osm.pbf" --overwrite
+          rm -f "$RUNNER_TEMP/tokyo.osm.pbf"
+          osmium cat "$RUNNER_TEMP/roads.osm.pbf" -o "$RUNNER_TEMP/roads.osm" --overwrite
+          rm -f "$RUNNER_TEMP/roads.osm.pbf"
+          "$RUNNER_TEMP/aegis" import-osm \
+            --input "$RUNNER_TEMP/roads.osm" --output "$RUNNER_TEMP/tokyo.aegis" \
+            --profile car --metric time
+          rm -f "$RUNNER_TEMP/roads.osm"
+          ls -lh "$RUNNER_TEMP/tokyo.aegis"
+      - name: Export identical CH and CCH graphs
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/aegis-routingkit-export" --graph "$RUNNER_TEMP/tokyo.aegis" --output "$RUNNER_TEMP/tokyo.ch"
+          "$RUNNER_TEMP/aegis-routingkit-cch-export" --graph "$RUNNER_TEMP/tokyo.aegis" --output "$RUNNER_TEMP/tokyo.cch"
+      - name: Native baseline and deterministic query set
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/tokyo-result"
+          "$RUNNER_TEMP/aegis" benchmark \
+            --graph "$RUNNER_TEMP/tokyo.aegis" --queries "$QUERIES" --repeats 1 \
+            --order interleaved --suite mixed --seed 424242 \
+            --algorithms dijkstra,astar,bidijkstra,aegis \
+            --output "$RUNNER_TEMP/tokyo-result/native.json" --html ""
+          python3 - <<'PY'
+          import json, os
+          root = os.environ['RUNNER_TEMP']
+          d = json.load(open(os.path.join(root, 'tokyo-result', 'native.json')))
+          pairs = d['queryPairs']
+          with open(os.path.join(root, 'queries.txt'), 'w') as out:
+              for q in pairs:
+                  out.write(f"{q['source']} {q['target']}\n")
+          with open(os.path.join(root, 'verify.txt'), 'w') as out:
+              for q in pairs[:50]:
+                  out.write(f"{q['source']} {q['target']}\n")
+          print('tokyo query pairs', len(pairs))
+          PY
+      - name: Persistent CH CCH ALT measurements
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/RoutingKit/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          OUT="$RUNNER_TEMP/tokyo-result"
+          "$RUNNER_TEMP/aegis-max-batch" --graph "$RUNNER_TEMP/tokyo.aegis" --queries "$RUNNER_TEMP/queries.txt" \
+            --routingkit-ch-server "$RUNNER_TEMP/aegis-routingkit-ch-server" --routingkit-ch-graph "$RUNNER_TEMP/tokyo.ch" \
+            --algorithms routingkit-ch --verify --summary-only --timeout 90m > "$OUT/ch.json"
+          "$RUNNER_TEMP/aegis-max-batch" --graph "$RUNNER_TEMP/tokyo.aegis" --queries "$RUNNER_TEMP/queries.txt" \
+            --routingkit-cch-server "$RUNNER_TEMP/aegis-routingkit-cch-server" --routingkit-cch-graph "$RUNNER_TEMP/tokyo.cch" \
+            --algorithms routingkit-cch --verify --summary-only --timeout 90m > "$OUT/cch.json"
+          "$RUNNER_TEMP/aegis-max-batch" --graph "$RUNNER_TEMP/tokyo.aegis" --queries "$RUNNER_TEMP/queries.txt" \
+            --alt-landmarks "$ALT_LANDMARKS" --algorithms alt --verify --summary-only --timeout 90m > "$OUT/alt.json"
+      - name: Exact consensus against 64-bit BiDijkstra
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/RoutingKit/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          OUT="$RUNNER_TEMP/tokyo-result"
+          "$RUNNER_TEMP/aegis-max-batch" --graph "$RUNNER_TEMP/tokyo.aegis" --queries "$RUNNER_TEMP/verify.txt" \
+            --routingkit-ch-server "$RUNNER_TEMP/aegis-routingkit-ch-server" --routingkit-ch-graph "$RUNNER_TEMP/tokyo.ch" \
+            --algorithms routingkit-ch,bidijkstra --verify --consensus --summary-only --timeout 90m > "$OUT/ch-consensus.json"
+          "$RUNNER_TEMP/aegis-max-batch" --graph "$RUNNER_TEMP/tokyo.aegis" --queries "$RUNNER_TEMP/verify.txt" \
+            --routingkit-cch-server "$RUNNER_TEMP/aegis-routingkit-cch-server" --routingkit-cch-graph "$RUNNER_TEMP/tokyo.cch" \
+            --algorithms routingkit-cch,bidijkstra --verify --consensus --summary-only --timeout 90m > "$OUT/cch-consensus.json"
+          "$RUNNER_TEMP/aegis-max-batch" --graph "$RUNNER_TEMP/tokyo.aegis" --queries "$RUNNER_TEMP/verify.txt" \
+            --alt-landmarks "$ALT_LANDMARKS" --algorithms alt,bidijkstra --verify --consensus --summary-only --timeout 90m > "$OUT/alt-consensus.json"
+      - name: Summarize Tokyo result
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, math, os
+          root = os.environ['RUNNER_TEMP']
+          out = os.path.join(root, 'tokyo-result')
+          native = json.load(open(os.path.join(out, 'native.json')))
+          ch = json.load(open(os.path.join(out, 'ch.json')))
+          cch = json.load(open(os.path.join(out, 'cch.json')))
+          alt = json.load(open(os.path.join(out, 'alt.json')))
+          chv = json.load(open(os.path.join(out, 'ch-consensus.json')))
+          cchv = json.load(open(os.path.join(out, 'cch-consensus.json')))
+          altv = json.load(open(os.path.join(out, 'alt-consensus.json')))
+          samples = {}
+          for item in native['samples']:
+              s = item['stats']; samples.setdefault(s['algorithm'], []).append(s['durationNs'])
+          def pct(v,p):
+              v=sorted(v); return v[min(len(v)-1,int(p*len(v)))]
+          ns = {a:{'p50Ns':pct(v,.5),'p95Ns':pct(v,.95),'p99Ns':pct(v,.99),'meanNs':int(sum(v)/len(v))} for a,v in samples.items()}
+          fastest = min(v['p50Ns'] for v in ns.values())
+          def be(pre,q):
+              gain=fastest-q
+              return None if gain<=0 else math.ceil(pre/gain)
+          summary = {
+              'dataset':'tokyo','queries':int(os.environ['QUERIES']),'altLandmarks':int(os.environ['ALT_LANDMARKS']),
+              'native':ns,'fastestNativeP50Ns':fastest,
+              'ch':{'query':ch['report']['summary'],'preprocessNs':ch['routingKitCH']['preprocessNs'],'sidecarGraphBytes':ch['routingKitCH']['sidecarGraphBytes']},
+              'cch':{'query':cch['report']['summary'],'orderNs':cch['routingKitCCH']['orderNs'],'topologyNs':cch['routingKitCCH']['topologyNs'],'customizeNs':cch['routingKitCCH']['customizeNs'],'preprocessNs':cch['routingKitCCH']['preprocessNs'],'sidecarGraphBytes':cch['routingKitCCH']['sidecarGraphBytes']},
+              'alt':{'query':alt['report']['summary'],'preprocessNs':alt['alt']['preprocessNs'],'distanceTableBytes':alt['alt']['distanceTableBytes']},
+          }
+          summary['ch']['breakEvenQueries'] = be(summary['ch']['preprocessNs'], summary['ch']['query']['p50Ns'])
+          summary['cch']['breakEvenQueries'] = be(summary['cch']['preprocessNs'], summary['cch']['query']['p50Ns'])
+          summary['alt']['breakEvenQueries'] = be(summary['alt']['preprocessNs'], summary['alt']['query']['p50Ns'])
+          for name, v in [('ch',chv),('cch',cchv),('alt',altv)]:
+              s=v['report']['summary']
+              summary[name]['consensus']={'queries':s['queries'],'reached':s['consensusReached']}
+              if s['consensusReached'] != s['queries']:
+                  raise SystemExit(f'{name} consensus failed')
+          json.dump(summary, open(os.path.join(out,'summary.json'),'w'), indent=2, sort_keys=True)
+          print('TOKYO_SUMMARY=' + json.dumps(summary, sort_keys=True))
+          PY
+      - name: Upload Tokyo evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: aegis-max-tokyo-time-300-alt8
+          path: ${{ runner.temp }}/tokyo-result/
+          if-no-files-found: error
+          retention-days: 30
