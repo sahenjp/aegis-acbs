@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/lasder-ca/aegis-acbs/internal/graph"
+	"github.com/lasder-ca/aegis-acbs/internal/maxsearch"
 )
 
 const routingKitInfWeight = uint64(2147483647)
@@ -23,13 +24,17 @@ func main() {
 	if err != nil {
 		fatal("load graph: %v", err)
 	}
+	fingerprint := maxsearch.RoutingKitGraphFingerprint(g)
 	file, err := os.Create(*outputPath)
 	if err != nil {
 		fatal("create output: %v", err)
 	}
 	w := bufio.NewWriterSize(file, 1<<20)
-	if _, err := fmt.Fprintln(w, "AEGIS_ROUTINGKIT_CH_SERVER_V1"); err != nil {
+	if _, err := fmt.Fprintln(w, "AEGIS_ROUTINGKIT_CH_SERVER_V2"); err != nil {
 		fatal("write magic: %v", err)
+	}
+	if _, err := fmt.Fprintln(w, fingerprint); err != nil {
+		fatal("write fingerprint: %v", err)
 	}
 	if _, err := fmt.Fprintf(w, "%d %d\n", len(g.Nodes), g.EdgeCount); err != nil {
 		fatal("write header: %v", err)
@@ -55,7 +60,7 @@ func main() {
 	if err := file.Close(); err != nil {
 		fatal("close output: %v", err)
 	}
-	fmt.Printf("routingkit CH export: nodes=%d edges=%d output=%s\n", len(g.Nodes), actualEdges, *outputPath)
+	fmt.Printf("routingkit CH export: nodes=%d edges=%d fingerprint=%s output=%s\n", len(g.Nodes), actualEdges, fingerprint, *outputPath)
 }
 
 func fatal(format string, args ...any) {
