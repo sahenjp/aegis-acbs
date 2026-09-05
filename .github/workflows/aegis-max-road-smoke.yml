@@ -1,0 +1,71 @@
+name: Aegis Max Road Smoke
+
+on:
+  push:
+    branches: [research/aegis-max-exact]
+    paths:
+      - 'scripts/aegis-max-road-bench.sh'
+      - '.github/workflows/aegis-max-road-smoke.yml'
+      - 'cmd/aegis-max-batch/**'
+      - 'cmd/aegis-routingkit-export/**'
+      - 'cmd/aegis-routingkit-cch-export/**'
+      - 'internal/maxsearch/**'
+      - 'experimental/routingkit/**'
+  pull_request:
+    paths:
+      - 'scripts/aegis-max-road-bench.sh'
+      - '.github/workflows/aegis-max-road-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aegis-max-road-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  andorra:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Install native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ zlib1g-dev osmium-tool curl
+      - name: Run reproducible Andorra exact benchmark
+        shell: bash
+        env:
+          AEGIS_BENCH_MAKE_JOBS: '2'
+        run: |
+          set -euo pipefail
+          bash scripts/aegis-max-road-bench.sh andorra 120 time 8 "$RUNNER_TEMP/road-smoke"
+      - name: Assert evidence and publish summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/road-smoke/summary.json" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          src, summary = sys.argv[1:]
+          d = json.load(open(src, encoding='utf-8'))
+          assert d['allCorrect'] is True
+          assert d['queries'] == 120
+          names = {r['algorithm'] for r in d['rankingByQueryMean']}
+          required = {'dijkstra','bidijkstra','astar','aegis','routingkit-ch','routingkit-cch','alt'}
+          assert required <= names, (required - names)
+          with open(summary, 'a', encoding='utf-8') as out:
+              out.write(f"## Aegis Max Andorra smoke\n\n{d['nodes']:,} nodes · {d['edges']:,} edges · {d['queries']} identical queries · all correct: **true**\n\n")
+              out.write('| algorithm | mean | p50 | p95 | preprocess | amortized mean |\n|---|---:|---:|---:|---:|---:|\n')
+              for r in d['rankingByQueryMean']:
+                  ms = lambda n: f"{n/1e6:.6f} ms"
+                  out.write(f"| {r['algorithm']} | {ms(r['meanNs'])} | {ms(r['p50Ns'])} | {ms(r['p95Ns'])} | {ms(r['preprocessNs'])} | {ms(r['amortizedMeanNs'])} |\n")
+          print(json.dumps(d, indent=2, sort_keys=True))
+          PY
