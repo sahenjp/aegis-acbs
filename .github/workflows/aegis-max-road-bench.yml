@@ -1,0 +1,296 @@
+name: Aegis Max Road Bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: Road dataset scale
+        required: true
+        default: andorra
+        type: choice
+        options:
+          - andorra
+          - tokyo
+          - kanto
+          - japan
+      metric:
+        description: Aegis edge metric
+        required: true
+        default: time
+        type: choice
+        options:
+          - time
+          - distance
+      queries:
+        description: Number of deterministic mixed query pairs
+        required: true
+        default: '1000'
+        type: string
+      runner:
+        description: Runner label; Japan is better suited to a large self-hosted runner
+        required: true
+        default: ubuntu-latest
+        type: choice
+        options:
+          - ubuntu-latest
+          - self-hosted
+
+permissions:
+  contents: read
+
+jobs:
+  road-bench:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    env:
+      QUERIES: ${{ inputs.queries }}
+      DATASET: ${{ inputs.dataset }}
+      METRIC: ${{ inputs.metric }}
+      ROUTINGKIT_COMMIT: 54d49bb0cdea56dde182357522e4e86a03c57852
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.x'
+          cache: true
+
+      - name: Validate benchmark inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$QUERIES" =~ ^[1-9][0-9]*$ ]] || { echo "queries must be a positive integer" >&2; exit 2; }
+          if (( QUERIES > 100000 )); then
+            echo "queries is capped at 100000" >&2
+            exit 2
+          fi
+          if [[ "$DATASET" == japan && "${{ inputs.runner }}" == ubuntu-latest ]]; then
+            echo "warning: Japan is about 2+ GB before filtering and may exceed hosted-runner memory or disk; self-hosted is recommended" >&2
+          fi
+          df -h .
+
+      - name: Install native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ zlib1g-dev osmium-tool curl
+
+      - name: Build pinned RoutingKit and Aegis tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/RoutingKit/RoutingKit.git "$RUNNER_TEMP/RoutingKit"
+          git -C "$RUNNER_TEMP/RoutingKit" checkout "$ROUTINGKIT_COMMIT"
+          make -C "$RUNNER_TEMP/RoutingKit" -j"$(nproc)"
+          bash scripts/build-routingkit-ch-server.sh "$RUNNER_TEMP/RoutingKit" "$RUNNER_TEMP/aegis-routingkit-ch-server"
+          bash scripts/build-routingkit-cch-server.sh "$RUNNER_TEMP/RoutingKit" "$RUNNER_TEMP/aegis-routingkit-cch-server"
+          go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+          go build -o "$RUNNER_TEMP/aegis-max-batch" ./cmd/aegis-max-batch
+          go build -o "$RUNNER_TEMP/aegis-routingkit-export" ./cmd/aegis-routingkit-export
+          go build -o "$RUNNER_TEMP/aegis-routingkit-cch-export" ./cmd/aegis-routingkit-cch-export
+
+      - name: Resolve and download OSM extract
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$DATASET" in
+            andorra) URL='https://download.geofabrik.de/europe/andorra-latest.osm.pbf' ;;
+            tokyo)   URL='https://download.bbbike.org/osm/bbbike/Tokyo/Tokyo.osm.pbf' ;;
+            kanto)   URL='https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf' ;;
+            japan)   URL='https://download.geofabrik.de/asia/japan-latest.osm.pbf' ;;
+            *) echo "unknown dataset: $DATASET" >&2; exit 2 ;;
+          esac
+          echo "DATA_URL=$URL" >> "$GITHUB_ENV"
+          curl -fL --retry 6 --retry-all-errors --retry-delay 2 "$URL" -o "$RUNNER_TEMP/raw.osm.pbf"
+          ls -lh "$RUNNER_TEMP/raw.osm.pbf"
+
+      - name: Reduce input to road ways and import Aegis graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          # tags-filter retains nodes referenced by matching highway ways unless
+          # --omit-referenced is requested. This keeps the routing graph while
+          # avoiding a huge all-feature XML expansion for Tokyo/Japan.
+          osmium tags-filter "$RUNNER_TEMP/raw.osm.pbf" w/highway \
+            -o "$RUNNER_TEMP/roads.osm.pbf" --overwrite
+          rm -f "$RUNNER_TEMP/raw.osm.pbf"
+          osmium cat "$RUNNER_TEMP/roads.osm.pbf" \
+            -o "$RUNNER_TEMP/roads.osm" --overwrite
+          rm -f "$RUNNER_TEMP/roads.osm.pbf"
+          "$RUNNER_TEMP/aegis" import-osm \
+            --input "$RUNNER_TEMP/roads.osm" \
+            --output "$RUNNER_TEMP/road.aegis" \
+            --profile car --metric "$METRIC"
+          rm -f "$RUNNER_TEMP/roads.osm"
+          ls -lh "$RUNNER_TEMP/road.aegis"
+          df -h .
+
+      - name: Export identical CH and CCH sidecar graphs
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/aegis-routingkit-export" \
+            --graph "$RUNNER_TEMP/road.aegis" \
+            --output "$RUNNER_TEMP/road.routingkit-ch"
+          "$RUNNER_TEMP/aegis-routingkit-cch-export" \
+            --graph "$RUNNER_TEMP/road.aegis" \
+            --output "$RUNNER_TEMP/road.routingkit-cch"
+          ls -lh "$RUNNER_TEMP"/road.routingkit-*
+
+      - name: Generate deterministic same-query native baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/aegis-max-road-bench"
+          "$RUNNER_TEMP/aegis" benchmark \
+            --graph "$RUNNER_TEMP/road.aegis" \
+            --queries "$QUERIES" --repeats 1 --order interleaved --suite mixed \
+            --seed 424242 --algorithms dijkstra,astar,bidijkstra,aegis \
+            --output "$RUNNER_TEMP/aegis-max-road-bench/native.json" --html ""
+          python3 - <<'PY'
+          import json, os
+          root = os.environ['RUNNER_TEMP']
+          report = json.load(open(os.path.join(root, 'aegis-max-road-bench', 'native.json')))
+          pairs = report.get('queryPairs') or []
+          if not pairs:
+              raise SystemExit('benchmark report contained no queryPairs')
+          all_path = os.path.join(root, 'queries.txt')
+          verify_path = os.path.join(root, 'verify-queries.txt')
+          with open(all_path, 'w', encoding='utf-8') as out:
+              for q in pairs:
+                  out.write(f"{q['Source'] if 'Source' in q else q['source']} {q['Target'] if 'Target' in q else q['target']}\n")
+          with open(verify_path, 'w', encoding='utf-8') as out:
+              for q in pairs[:min(50, len(pairs))]:
+                  out.write(f"{q['Source'] if 'Source' in q else q['source']} {q['Target'] if 'Target' in q else q['target']}\n")
+          print('query pairs:', len(pairs), 'verification pairs:', min(50, len(pairs)))
+          PY
+
+      - name: Measure persistent CH and CCH query latency
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/RoutingKit/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          OUT="$RUNNER_TEMP/aegis-max-road-bench"
+          "$RUNNER_TEMP/aegis-max-batch" \
+            --graph "$RUNNER_TEMP/road.aegis" --queries "$RUNNER_TEMP/queries.txt" \
+            --routingkit-ch-server "$RUNNER_TEMP/aegis-routingkit-ch-server" \
+            --routingkit-ch-graph "$RUNNER_TEMP/road.routingkit-ch" \
+            --algorithms routingkit-ch --verify --summary-only \
+            --timeout 120m > "$OUT/ch.json"
+          "$RUNNER_TEMP/aegis-max-batch" \
+            --graph "$RUNNER_TEMP/road.aegis" --queries "$RUNNER_TEMP/queries.txt" \
+            --routingkit-cch-server "$RUNNER_TEMP/aegis-routingkit-cch-server" \
+            --routingkit-cch-graph "$RUNNER_TEMP/road.routingkit-cch" \
+            --algorithms routingkit-cch --verify --summary-only \
+            --timeout 120m > "$OUT/cch.json"
+
+      - name: Cross-check CH and CCH against 64-bit BiDijkstra
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/RoutingKit/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          OUT="$RUNNER_TEMP/aegis-max-road-bench"
+          "$RUNNER_TEMP/aegis-max-batch" \
+            --graph "$RUNNER_TEMP/road.aegis" --queries "$RUNNER_TEMP/verify-queries.txt" \
+            --routingkit-ch-server "$RUNNER_TEMP/aegis-routingkit-ch-server" \
+            --routingkit-ch-graph "$RUNNER_TEMP/road.routingkit-ch" \
+            --algorithms routingkit-ch,bidijkstra --verify --consensus --summary-only \
+            --timeout 120m > "$OUT/ch-consensus.json"
+          "$RUNNER_TEMP/aegis-max-batch" \
+            --graph "$RUNNER_TEMP/road.aegis" --queries "$RUNNER_TEMP/verify-queries.txt" \
+            --routingkit-cch-server "$RUNNER_TEMP/aegis-routingkit-cch-server" \
+            --routingkit-cch-graph "$RUNNER_TEMP/road.routingkit-cch" \
+            --algorithms routingkit-cch,bidijkstra --verify --consensus --summary-only \
+            --timeout 120m > "$OUT/cch-consensus.json"
+
+      - name: Build comparable summary and break-even estimates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, math, os, statistics
+          root = os.environ['RUNNER_TEMP']
+          out = os.path.join(root, 'aegis-max-road-bench')
+          native = json.load(open(os.path.join(out, 'native.json')))
+          ch = json.load(open(os.path.join(out, 'ch.json')))
+          cch = json.load(open(os.path.join(out, 'cch.json')))
+          chv = json.load(open(os.path.join(out, 'ch-consensus.json')))
+          cchv = json.load(open(os.path.join(out, 'cch-consensus.json')))
+
+          samples = {}
+          for item in native.get('samples', []):
+              stats = item.get('stats', {})
+              alg = stats.get('algorithm')
+              ns = stats.get('durationNs')
+              if alg and isinstance(ns, int) and ns > 0:
+                  samples.setdefault(alg, []).append(ns)
+
+          def pct(values, p):
+              values = sorted(values)
+              if not values:
+                  return 0
+              i = min(len(values)-1, int(p * len(values)))
+              return values[i]
+
+          native_summary = {}
+          for alg, values in sorted(samples.items()):
+              native_summary[alg] = {
+                  'queries': len(values),
+                  'p50Ns': pct(values, .50),
+                  'p95Ns': pct(values, .95),
+                  'p99Ns': pct(values, .99),
+                  'meanNs': int(sum(values) / len(values)),
+              }
+          fastest_native = min((v['p50Ns'] for v in native_summary.values() if v['p50Ns'] > 0), default=0)
+
+          def break_even(preprocess, query_ns):
+              gain = fastest_native - query_ns
+              return None if gain <= 0 else math.ceil(preprocess / gain)
+
+          chs = ch['report']['summary']
+          cchs = cch['report']['summary']
+          chmeta = ch['routingKitCH']
+          cchmeta = cch['routingKitCCH']
+          summary = {
+              'dataset': os.environ['DATASET'],
+              'metric': os.environ['METRIC'],
+              'queries': int(os.environ['QUERIES']),
+              'sourceUrl': os.environ['DATA_URL'],
+              'native': native_summary,
+              'fastestNativeP50Ns': fastest_native,
+              'ch': {
+                  'query': chs,
+                  'preprocessNs': chmeta['preprocessNs'],
+                  'sidecarGraphBytes': chmeta['sidecarGraphBytes'],
+                  'breakEvenQueriesVsFastestNativeP50': break_even(chmeta['preprocessNs'], chs['p50Ns']),
+                  'consensus': chv['report']['summary'],
+              },
+              'cch': {
+                  'query': cchs,
+                  'orderNs': cchmeta['orderNs'],
+                  'topologyNs': cchmeta['topologyNs'],
+                  'customizeNs': cchmeta['customizeNs'],
+                  'preprocessNs': cchmeta['preprocessNs'],
+                  'sidecarGraphBytes': cchmeta['sidecarGraphBytes'],
+                  'breakEvenQueriesVsFastestNativeP50': break_even(cchmeta['preprocessNs'], cchs['p50Ns']),
+                  'consensus': cchv['report']['summary'],
+              },
+          }
+          if summary['ch']['consensus']['consensusReached'] != summary['ch']['consensus']['queries']:
+              raise SystemExit('CH failed native consensus')
+          if summary['cch']['consensus']['consensusReached'] != summary['cch']['consensus']['queries']:
+              raise SystemExit('CCH failed native consensus')
+          path = os.path.join(out, 'summary.json')
+          json.dump(summary, open(path, 'w'), indent=2, sort_keys=True)
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload benchmark evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: aegis-max-${{ inputs.dataset }}-${{ inputs.metric }}-${{ inputs.queries }}
+          path: ${{ runner.temp }}/aegis-max-road-bench/
+          if-no-files-found: error
+          retention-days: 30
