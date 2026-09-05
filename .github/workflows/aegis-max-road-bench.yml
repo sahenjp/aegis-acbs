@@ -1,6 +1,10 @@
 name: Aegis Max Road Bench
 
 on:
+  push:
+    branches: [research/aegis-max-exact]
+    paths:
+      - '.github/workflows/aegis-max-road-bench.yml'
   workflow_dispatch:
     inputs:
       dataset:
@@ -40,12 +44,12 @@ permissions:
 
 jobs:
   road-bench:
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     timeout-minutes: 360
     env:
-      QUERIES: ${{ inputs.queries }}
-      DATASET: ${{ inputs.dataset }}
-      METRIC: ${{ inputs.metric }}
+      QUERIES: ${{ inputs.queries || '300' }}
+      DATASET: ${{ inputs.dataset || 'andorra' }}
+      METRIC: ${{ inputs.metric || 'time' }}
       ROUTINGKIT_COMMIT: 54d49bb0cdea56dde182357522e4e86a03c57852
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,7 +69,7 @@ jobs:
             echo "queries is capped at 100000" >&2
             exit 2
           fi
-          if [[ "$DATASET" == japan && "${{ inputs.runner }}" == ubuntu-latest ]]; then
+          if [[ "$DATASET" == japan && "${{ inputs.runner || 'ubuntu-latest' }}" == ubuntu-latest ]]; then
             echo "warning: Japan is about 2+ GB before filtering and may exceed hosted-runner memory or disk; self-hosted is recommended" >&2
           fi
           df -h .
@@ -160,10 +164,10 @@ jobs:
           verify_path = os.path.join(root, 'verify-queries.txt')
           with open(all_path, 'w', encoding='utf-8') as out:
               for q in pairs:
-                  out.write(f"{q['Source'] if 'Source' in q else q['source']} {q['Target'] if 'Target' in q else q['target']}\n")
+                  out.write(f"{q['source']} {q['target']}\n")
           with open(verify_path, 'w', encoding='utf-8') as out:
               for q in pairs[:min(50, len(pairs))]:
-                  out.write(f"{q['Source'] if 'Source' in q else q['source']} {q['Target'] if 'Target' in q else q['target']}\n")
+                  out.write(f"{q['source']} {q['target']}\n")
           print('query pairs:', len(pairs), 'verification pairs:', min(50, len(pairs)))
           PY
 
@@ -210,7 +214,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, math, os, statistics
+          import json, math, os
           root = os.environ['RUNNER_TEMP']
           out = os.path.join(root, 'aegis-max-road-bench')
           native = json.load(open(os.path.join(out, 'native.json')))
@@ -290,7 +294,7 @@ jobs:
       - name: Upload benchmark evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: aegis-max-${{ inputs.dataset }}-${{ inputs.metric }}-${{ inputs.queries }}
+          name: aegis-max-${{ env.DATASET }}-${{ env.METRIC }}-${{ env.QUERIES }}
           path: ${{ runner.temp }}/aegis-max-road-bench/
           if-no-files-found: error
           retention-days: 30
