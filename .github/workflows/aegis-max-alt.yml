@@ -1,0 +1,133 @@
+name: Aegis Max ALT
+
+on:
+  push:
+    branches: [research/aegis-max-exact]
+    paths:
+      - 'internal/maxsearch/alt.go'
+      - 'internal/maxsearch/alt_test.go'
+      - 'internal/maxsearch/batch.go'
+      - 'cmd/aegis-max/**'
+      - 'cmd/aegis-max-batch/**'
+      - '.github/workflows/aegis-max-alt.yml'
+  pull_request:
+    paths:
+      - 'internal/maxsearch/alt.go'
+      - 'internal/maxsearch/alt_test.go'
+      - 'internal/maxsearch/batch.go'
+      - 'cmd/aegis-max/**'
+      - 'cmd/aegis-max-batch/**'
+      - '.github/workflows/aegis-max-alt.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aegis-max-alt-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  alt-exact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Unit correctness
+        run: go test ./internal/maxsearch -run 'ALT|Batch' -count=1
+      - name: Build tools
+        run: |
+          go vet ./internal/maxsearch ./cmd/aegis-max ./cmd/aegis-max-batch
+          go build -o /tmp/aegis ./cmd/aegis
+          go build -o /tmp/aegis-max ./cmd/aegis-max
+          go build -o /tmp/aegis-max-batch ./cmd/aegis-max-batch
+      - name: Import Hatfield and choose reachable queries
+        shell: bash
+        run: |
+          set -euo pipefail
+          /tmp/aegis import-osm \
+            --input benchdata/hatfield-uk.osm \
+            --output /tmp/hatfield.aegis \
+            --profile car --metric distance
+          /tmp/aegis benchmark \
+            --graph /tmp/hatfield.aegis --queries 32 --repeats 1 \
+            --order interleaved --suite mixed --seed 424242 \
+            --algorithms dijkstra --output /tmp/hatfield-bench.json --html ""
+          python3 - <<'PY'
+          import json, os
+          d = json.load(open('/tmp/hatfield-bench.json'))
+          pairs = d['queryPairs']
+          reachable = []
+          for sample in d['samples']:
+              if sample['stats']['algorithm'] != 'dijkstra' or not sample['stats']['reachable']:
+                  continue
+              q = pairs[sample['queryIndex']]
+              pair = (q['source'], q['target'])
+              if pair not in reachable:
+                  reachable.append(pair)
+              if len(reachable) >= 6:
+                  break
+          if len(reachable) < 3:
+              raise SystemExit('not enough reachable Hatfield queries')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'ALT_SOURCE={reachable[0][0]}\nALT_TARGET={reachable[0][1]}\n')
+          with open('/tmp/alt-queries.txt', 'w') as out:
+              for s, t in reachable:
+                  out.write(f'{s} {t}\n')
+          print('ALT reachable pairs:', reachable)
+          PY
+      - name: Verify ALT single query and BiDijkstra consensus
+        shell: bash
+        run: |
+          set -euo pipefail
+          /tmp/aegis-max \
+            --graph /tmp/hatfield.aegis \
+            --source "$ALT_SOURCE" --target "$ALT_TARGET" \
+            --mode efficient --algorithms alt --alt-landmarks 4 --verify \
+            > /tmp/alt-only.json
+          /tmp/aegis-max \
+            --graph /tmp/hatfield.aegis \
+            --source "$ALT_SOURCE" --target "$ALT_TARGET" \
+            --mode latency --parallel 2 --algorithms alt,bidijkstra \
+            --alt-landmarks 4 --verify --consensus \
+            > /tmp/alt-consensus.json
+          python3 - <<'PY'
+          import json
+          one = json.load(open('/tmp/alt-only.json'))
+          two = json.load(open('/tmp/alt-consensus.json'))
+          assert one['winner'] == 'alt'
+          assert one['result']['stats']['reachable'] is True
+          assert one['alt']['landmarks'] == 4
+          assert one['alt']['preprocessNs'] > 0
+          assert one['alt']['distanceTableBytes'] > 0
+          assert two['consensusReached'] is True
+          assert two['result']['stats']['distance'] == one['result']['stats']['distance']
+          print('ALT single-query consensus ok')
+          PY
+      - name: Reuse one ALT table across batch queries
+        shell: bash
+        run: |
+          set -euo pipefail
+          /tmp/aegis-max-batch \
+            --graph /tmp/hatfield.aegis --queries /tmp/alt-queries.txt \
+            --alt-landmarks 4 --algorithms alt,bidijkstra \
+            --verify --consensus --summary-only \
+            > /tmp/alt-batch.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/alt-batch.json'))
+          s = d['report']['summary']
+          assert s['queries'] >= 3
+          assert s['reachable'] == s['queries']
+          assert s['consensusReached'] == s['queries']
+          assert s['winnerCounts'].get('alt') == s['queries']
+          assert d['alt']['landmarks'] == 4
+          assert d['alt']['preprocessNs'] > 0
+          assert d['alt']['distanceTableBytes'] > 0
+          print('persistent ALT batch reuse ok')
+          PY
