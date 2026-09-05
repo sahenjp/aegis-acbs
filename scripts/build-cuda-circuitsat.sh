@@ -13,7 +13,6 @@ mkdir -p "$(dirname "$OUT")"
 nvcc \
   -O3 \
   -std=c++17 \
-  --use_fast_math=false \
   "$ROOT/experimental/cuda/circuitsat.cu" \
   -o "$OUT"
 
