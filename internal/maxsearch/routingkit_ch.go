@@ -21,6 +21,8 @@ import (
 
 const RoutingKitCH search.Algorithm = "routingkit-ch"
 
+var ErrRoutingKitCHUnreachableUncertified = errors.New("maxsearch: RoutingKit CH unreachable result is not a 64-bit reachability certificate")
+
 type RoutingKitCHRunner struct {
 	mu           sync.Mutex
 	cmd          *exec.Cmd
@@ -168,7 +170,13 @@ func (r *RoutingKitCHRunner) Run(ctx context.Context, g *graph.Graph, source, ta
 	if err != nil {
 		return search.Result{}, r.protocolError("parse query result", err)
 	}
-	if result.Stats.Reachable && !search.Validate(g, source, target, result) {
+	if !result.Stats.Reachable {
+		// RoutingKit uses a 31-bit finite-distance sentinel. A true shortest path
+		// above that range can therefore look unreachable. Never promote U to an
+		// exact Aegis result; let a native uint64 runner certify reachability.
+		return search.Result{}, ErrRoutingKitCHUnreachableUncertified
+	}
+	if !search.Validate(g, source, target, result) {
 		return search.Result{}, errors.New("maxsearch: RoutingKit CH returned an invalid path")
 	}
 	return result, nil
@@ -191,7 +199,6 @@ func (r *RoutingKitCHRunner) Close() error {
 		return flushErr
 	}
 	if waitErr != nil {
-		// Cancellation is expected when another portfolio member wins.
 		if r.cmd.ProcessState != nil && !r.cmd.ProcessState.Success() {
 			return r.protocolError("wait for RoutingKit CH server", waitErr)
 		}
