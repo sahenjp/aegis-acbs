@@ -32,10 +32,17 @@ type routingKitCCHMetadata struct {
 	SidecarGraphBytes int64  `json:"sidecarGraphBytes"`
 }
 
+type altMetadata struct {
+	Landmarks          int    `json:"landmarks"`
+	PreprocessNS       int64  `json:"preprocessNs"`
+	DistanceTableBytes uint64 `json:"distanceTableBytes"`
+}
+
 type output struct {
-	Report        maxsearch.BatchReport   `json:"report"`
-	RoutingKitCH  *routingKitCHMetadata   `json:"routingKitCH,omitempty"`
-	RoutingKitCCH *routingKitCCHMetadata  `json:"routingKitCCH,omitempty"`
+	Report        maxsearch.BatchReport  `json:"report"`
+	RoutingKitCH  *routingKitCHMetadata  `json:"routingKitCH,omitempty"`
+	RoutingKitCCH *routingKitCCHMetadata `json:"routingKitCCH,omitempty"`
+	ALT           *altMetadata           `json:"alt,omitempty"`
 }
 
 func main() {
@@ -45,7 +52,8 @@ func main() {
 	routingKitCHGraph := flag.String("routingkit-ch-graph", "", "graph produced by aegis-routingkit-export")
 	routingKitCCHServer := flag.String("routingkit-cch-server", "", "optional RoutingKit CCH sidecar binary")
 	routingKitCCHGraph := flag.String("routingkit-cch-graph", "", "graph produced by aegis-routingkit-cch-export")
-	algorithmsText := flag.String("algorithms", "", "comma-separated exact runner order; defaults to configured CCH, CH, bidijkstra, dijkstra")
+	altLandmarks := flag.Int("alt-landmarks", 0, "build and reuse an exact directed ALT runner with this many landmarks (1-32; 0 disables ALT)")
+	algorithmsText := flag.String("algorithms", "", "comma-separated exact runner order; defaults to configured CCH, CH, ALT, bidijkstra, dijkstra")
 	consensus := flag.Bool("consensus", false, "require two successful exact runners to agree for every query")
 	verify := flag.Bool("verify", true, "validate every successful path")
 	summaryOnly := flag.Bool("summary-only", false, "omit per-query samples from JSON output")
@@ -61,10 +69,14 @@ func main() {
 	if (*routingKitCCHServer == "") != (*routingKitCCHGraph == "") {
 		fatal(errors.New("--routingkit-cch-server and --routingkit-cch-graph must be provided together"))
 	}
+	if *altLandmarks < 0 || *altLandmarks > 32 {
+		fatal(errors.New("--alt-landmarks must be between 0 and 32"))
+	}
 	useCH := *routingKitCHServer != ""
 	useCCH := *routingKitCCHServer != ""
-	if !useCH && !useCCH {
-		fatal(errors.New("configure at least one RoutingKit CH or CCH sidecar for persistent batch mode"))
+	useALT := *altLandmarks > 0
+	if !useCH && !useCCH && !useALT {
+		fatal(errors.New("configure at least one CH, CCH, or ALT preprocessed runner for persistent batch mode"))
 	}
 
 	g, err := graph.Load(*graphPath)
@@ -83,6 +95,9 @@ func main() {
 		if useCH {
 			algorithms = append(algorithms, maxsearch.RoutingKitCH)
 		}
+		if useALT {
+			algorithms = append(algorithms, maxsearch.ALT)
+		}
 		algorithms = append(algorithms, search.BiDijkstra, search.Dijkstra)
 	} else {
 		if containsAlgorithm(algorithms, maxsearch.RoutingKitCCH) && !useCCH {
@@ -90,6 +105,9 @@ func main() {
 		}
 		if containsAlgorithm(algorithms, maxsearch.RoutingKitCH) && !useCH {
 			fatal(errors.New("routingkit-ch selected without a configured CH sidecar"))
+		}
+		if containsAlgorithm(algorithms, maxsearch.ALT) && !useALT {
+			fatal(errors.New("alt selected without --alt-landmarks"))
 		}
 	}
 
@@ -111,6 +129,13 @@ func main() {
 		}
 		defer func() { _ = ch.Close() }()
 	}
+	var alt *maxsearch.ALTRunner
+	if useALT {
+		alt, err = maxsearch.NewALTRunner(ctx, g, *altLandmarks)
+		if err != nil {
+			fatal(err)
+		}
+	}
 
 	runners := make([]maxsearch.Runner, 0, len(algorithms))
 	seen := make(map[search.Algorithm]struct{}, len(algorithms))
@@ -130,6 +155,11 @@ func main() {
 				fatal(errors.New("routingkit-ch selected without a configured CH sidecar"))
 			}
 			runners = append(runners, ch)
+		case maxsearch.ALT:
+			if alt == nil {
+				fatal(errors.New("alt selected without configured landmarks"))
+			}
+			runners = append(runners, alt)
 		default:
 			runners = append(runners, maxsearch.BuiltinRunner{Algorithm: algorithm})
 		}
@@ -138,8 +168,9 @@ func main() {
 		fatal(errors.New("consensus requires at least two runners"))
 	}
 
-	// Efficient mode is deliberate: each stateful sidecar is allowed to finish
-	// before another runner starts, so preprocessing is reused across the batch.
+	// Efficient mode is deliberate: every stateful preprocessed runner is
+	// allowed to finish before another candidate starts, so its index/tables can
+	// be reused safely across the complete batch.
 	cfg := maxsearch.Config{
 		Mode:        maxsearch.ModeEfficient,
 		MaxParallel: 1,
@@ -178,6 +209,13 @@ func main() {
 			PreprocessNS:      cch.PreprocessDuration().Nanoseconds(),
 			Fingerprint:       cch.Fingerprint(),
 			SidecarGraphBytes: info.Size(),
+		}
+	}
+	if alt != nil {
+		result.ALT = &altMetadata{
+			Landmarks:          alt.LandmarkCount(),
+			PreprocessNS:       alt.PreprocessDuration().Nanoseconds(),
+			DistanceTableBytes: alt.DistanceTableBytes(),
 		}
 	}
 	enc := json.NewEncoder(os.Stdout)
