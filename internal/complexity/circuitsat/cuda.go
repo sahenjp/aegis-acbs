@@ -2,6 +2,7 @@ package circuitsat
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -33,48 +34,42 @@ func SolveCUDA(ctx context.Context, c Circuit, cfg CUDAConfig) (Result, error) {
 	if cfg.Chunk > 0 {
 		args = append(args, "--chunk", strconv.FormatUint(cfg.Chunk, 10))
 	}
+
+	var input, stdout, stderr bytes.Buffer
+	if err := writeCUDAProblem(&input, c); err != nil {
+		return Result{}, err
+	}
 	cmd := exec.CommandContext(ctx, cfg.Binary, args...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return Result{}, err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return Result{}, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return Result{}, err
-	}
-	if err := cmd.Start(); err != nil {
-		return Result{}, err
-	}
-	writeErr := writeCUDAProblem(stdin, c)
-	_ = stdin.Close()
-	response, readErr := io.ReadAll(stdout)
-	stderrBytes, _ := io.ReadAll(stderr)
-	waitErr := cmd.Wait()
-	if writeErr != nil {
-		return Result{}, writeErr
-	}
-	if readErr != nil {
-		return Result{}, readErr
-	}
-	if waitErr != nil {
-		message := strings.TrimSpace(string(stderrBytes))
+	cmd.Stdin = &input
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
 		if message == "" {
-			return Result{}, waitErr
+			return Result{}, err
 		}
-		return Result{}, fmt.Errorf("circuitsat: CUDA sidecar failed: %s: %w", message, waitErr)
+		return Result{}, fmt.Errorf("circuitsat: CUDA sidecar failed: %s: %w", message, err)
 	}
-	result, err := parseCUDAResponse(string(response))
+
+	result, err := parseCUDAResponse(stdout.String())
 	if err != nil {
 		return Result{}, err
+	}
+	total := uint64(1) << uint(c.Inputs)
+	if result.Stats.CheckedAssignments == 0 || result.Stats.CheckedAssignments > total {
+		return Result{}, fmt.Errorf("%w: checked assignment count is out of range", ErrCUDAProtocol)
 	}
 	if result.Satisfiable {
+		if result.Assignment >= total {
+			return Result{}, fmt.Errorf("%w: witness is out of range", ErrCUDAProtocol)
+		}
 		if err := VerifyAssignment(c, result.Assignment); err != nil {
 			return Result{}, fmt.Errorf("circuitsat: CUDA witness verification failed: %w", err)
 		}
+		return result, nil
+	}
+	if result.Stats.CheckedAssignments != total {
+		return Result{}, fmt.Errorf("%w: incomplete UNSAT traversal", ErrCUDAProtocol)
 	}
 	return result, nil
 }
