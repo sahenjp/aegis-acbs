@@ -13,28 +13,22 @@ BIN_DIR="${AEGIS_BENCH_BIN_DIR:-${RUNNER_TEMP:-/tmp}/aegis-max-road-bin}"
 mkdir -p "$OUT_DIR" "$BIN_DIR"
 
 case "$DATASET" in
-  andorra)
-    URL="https://download.geofabrik.de/europe/andorra-latest.osm.pbf"
-    PBF="$OUT_DIR/andorra.osm.pbf"
-    OSM="$OUT_DIR/andorra.osm"
-    ;;
-  tokyo)
-    URL="https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf"
-    PBF="$OUT_DIR/kanto.osm.pbf"
-    OSM="$OUT_DIR/tokyo.osm"
-    ;;
-  japan)
-    URL="https://download.geofabrik.de/asia/japan-latest.osm.pbf"
-    PBF="$OUT_DIR/japan.osm.pbf"
-    OSM="$OUT_DIR/japan.osm"
-    ;;
+  andorra) URL="https://download.geofabrik.de/europe/andorra-latest.osm.pbf" ;;
+  tokyo)   URL="https://download.bbbike.org/osm/bbbike/Tokyo/Tokyo.osm.pbf" ;;
+  kanto)   URL="https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf" ;;
+  japan)   URL="https://download.geofabrik.de/asia/japan-latest.osm.pbf" ;;
   *)
-    echo "unknown dataset: $DATASET (expected andorra, tokyo, or japan)" >&2
+    echo "unknown dataset: $DATASET (expected andorra, tokyo, kanto, or japan)" >&2
     exit 2
     ;;
 esac
 
-for tool in curl osmium go g++ make python3; do
+[[ "$QUERIES" =~ ^[1-9][0-9]*$ ]] || { echo "queries must be a positive integer" >&2; exit 2; }
+[[ "$ALT_LANDMARKS" =~ ^[1-9][0-9]*$ ]] || { echo "ALT landmarks must be a positive integer" >&2; exit 2; }
+(( QUERIES <= 100000 )) || { echo "queries is capped at 100000" >&2; exit 2; }
+(( ALT_LANDMARKS <= 32 )) || { echo "ALT landmarks is capped at 32" >&2; exit 2; }
+
+for tool in git curl osmium go g++ make python3; do
   command -v "$tool" >/dev/null || { echo "missing required tool: $tool" >&2; exit 2; }
 done
 
@@ -52,41 +46,34 @@ go build -o "$BIN_DIR/aegis-max-batch" ./cmd/aegis-max-batch
 go build -o "$BIN_DIR/aegis-routingkit-export" ./cmd/aegis-routingkit-export
 go build -o "$BIN_DIR/aegis-routingkit-cch-export" ./cmd/aegis-routingkit-cch-export
 
-if [[ ! -s "$PBF" ]]; then
-  curl -fL --retry 6 --retry-all-errors --retry-delay 2 "$URL" -o "$PBF"
+RAW="$OUT_DIR/raw.osm.pbf"
+ROADS_PBF="$OUT_DIR/roads.osm.pbf"
+ROADS_OSM="$OUT_DIR/roads.osm"
+if [[ ! -s "$RAW" ]]; then
+  curl -fL --retry 6 --retry-all-errors --retry-delay 2 "$URL" -o "$RAW"
 fi
-
-if [[ "$DATASET" == "tokyo" ]]; then
-  # Mainland Tokyo + the immediately connected metro fringe. Keeping the box
-  # stable makes benchmark runs comparable even though the Geofabrik source is
-  # refreshed over time.
-  osmium extract --bbox 138.85,35.45,140.05,35.95 "$PBF" -o "$OUT_DIR/tokyo.osm.pbf" --overwrite
-  osmium cat "$OUT_DIR/tokyo.osm.pbf" -o "$OSM" --overwrite
-else
-  osmium cat "$PBF" -o "$OSM" --overwrite
-fi
+# Keep referenced nodes for highway ways, then expand only the reduced routing
+# dataset to XML. This avoids exploding Tokyo/Kanto/Japan all-feature PBFs.
+osmium tags-filter "$RAW" w/highway -o "$ROADS_PBF" --overwrite
+osmium cat "$ROADS_PBF" -o "$ROADS_OSM" --overwrite
 
 GRAPH="$OUT_DIR/$DATASET-$METRIC.aegis"
 BASELINE="$OUT_DIR/baseline.json"
 QUERIES_FILE="$OUT_DIR/queries.txt"
+VERIFY_FILE="$OUT_DIR/verify-queries.txt"
 CH_GRAPH="$OUT_DIR/graph.routingkit-ch"
 CCH_GRAPH="$OUT_DIR/graph.routingkit-cch"
 
-"$BIN_DIR/aegis" import-osm --input "$OSM" --output "$GRAPH" --profile car --metric "$METRIC"
+"$BIN_DIR/aegis" import-osm --input "$ROADS_OSM" --output "$GRAPH" --profile car --metric "$METRIC"
 "$BIN_DIR/aegis" benchmark \
-  --graph "$GRAPH" \
-  --queries "$QUERIES" \
-  --repeats 1 \
-  --order interleaved \
-  --suite mixed \
-  --pair-mode strongly-connected \
-  --seed "$SEED" \
+  --graph "$GRAPH" --queries "$QUERIES" --repeats 1 --order interleaved \
+  --suite mixed --pair-mode strongly-connected --seed "$SEED" \
   --algorithms dijkstra,bidijkstra,astar,aegis \
   --output "$BASELINE" --html ""
 
-python3 - "$BASELINE" "$QUERIES_FILE" <<'PY'
+python3 - "$BASELINE" "$QUERIES_FILE" "$VERIFY_FILE" <<'PY'
 import json, sys
-src, dst = sys.argv[1:]
+src, dst, verify = sys.argv[1:]
 d = json.load(open(src, encoding='utf-8'))
 qs = d.get('queryPairs') or []
 if not qs:
@@ -94,72 +81,69 @@ if not qs:
 with open(dst, 'w', encoding='utf-8') as out:
     for q in qs:
         out.write(f"{q['source']} {q['target']}\n")
-print(f'wrote {len(qs)} shared query pairs to {dst}')
+with open(verify, 'w', encoding='utf-8') as out:
+    for q in qs[:min(50, len(qs))]:
+        out.write(f"{q['source']} {q['target']}\n")
+print(f'wrote {len(qs)} shared query pairs; consensus-checking {min(50, len(qs))}')
 PY
 
 "$BIN_DIR/aegis-routingkit-export" --graph "$GRAPH" --output "$CH_GRAPH"
 "$BIN_DIR/aegis-routingkit-cch-export" --graph "$GRAPH" --output "$CCH_GRAPH"
-
 export LD_LIBRARY_PATH="$ROUTINGKIT_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 "$BIN_DIR/aegis-max-batch" \
   --graph "$GRAPH" --queries "$QUERIES_FILE" \
-  --routingkit-ch-server "$BIN_DIR/aegis-routingkit-ch-server" \
-  --routingkit-ch-graph "$CH_GRAPH" \
-  --algorithms routingkit-ch --verify --summary-only \
-  > "$OUT_DIR/ch.json"
-
+  --routingkit-ch-server "$BIN_DIR/aegis-routingkit-ch-server" --routingkit-ch-graph "$CH_GRAPH" \
+  --algorithms routingkit-ch --verify --summary-only --timeout 120m > "$OUT_DIR/ch.json"
 "$BIN_DIR/aegis-max-batch" \
   --graph "$GRAPH" --queries "$QUERIES_FILE" \
-  --routingkit-cch-server "$BIN_DIR/aegis-routingkit-cch-server" \
-  --routingkit-cch-graph "$CCH_GRAPH" \
-  --algorithms routingkit-cch --verify --summary-only \
-  > "$OUT_DIR/cch.json"
+  --routingkit-cch-server "$BIN_DIR/aegis-routingkit-cch-server" --routingkit-cch-graph "$CCH_GRAPH" \
+  --algorithms routingkit-cch --verify --summary-only --timeout 120m > "$OUT_DIR/cch.json"
+"$BIN_DIR/aegis-max-batch" \
+  --graph "$GRAPH" --queries "$QUERIES_FILE" --alt-landmarks "$ALT_LANDMARKS" \
+  --algorithms alt --verify --summary-only --timeout 120m > "$OUT_DIR/alt.json"
 
 "$BIN_DIR/aegis-max-batch" \
-  --graph "$GRAPH" --queries "$QUERIES_FILE" \
-  --alt-landmarks "$ALT_LANDMARKS" \
-  --algorithms alt --verify --summary-only \
-  > "$OUT_DIR/alt.json"
+  --graph "$GRAPH" --queries "$VERIFY_FILE" \
+  --routingkit-ch-server "$BIN_DIR/aegis-routingkit-ch-server" --routingkit-ch-graph "$CH_GRAPH" \
+  --algorithms routingkit-ch,bidijkstra --verify --consensus --summary-only --timeout 120m > "$OUT_DIR/ch-consensus.json"
+"$BIN_DIR/aegis-max-batch" \
+  --graph "$GRAPH" --queries "$VERIFY_FILE" \
+  --routingkit-cch-server "$BIN_DIR/aegis-routingkit-cch-server" --routingkit-cch-graph "$CCH_GRAPH" \
+  --algorithms routingkit-cch,bidijkstra --verify --consensus --summary-only --timeout 120m > "$OUT_DIR/cch-consensus.json"
+"$BIN_DIR/aegis-max-batch" \
+  --graph "$GRAPH" --queries "$VERIFY_FILE" --alt-landmarks "$ALT_LANDMARKS" \
+  --algorithms alt,bidijkstra --verify --consensus --summary-only --timeout 120m > "$OUT_DIR/alt-consensus.json"
 
-python3 - "$DATASET" "$METRIC" "$BASELINE" "$OUT_DIR/ch.json" "$OUT_DIR/cch.json" "$OUT_DIR/alt.json" "$OUT_DIR/summary.json" <<'PY'
-import json, sys
-name, metric, base_p, ch_p, cch_p, alt_p, out_p = sys.argv[1:]
+python3 - "$DATASET" "$METRIC" "$URL" "$BASELINE" "$OUT_DIR" <<'PY'
+import json, math, os, sys
+name, metric, url, base_p, out = sys.argv[1:]
 base = json.load(open(base_p, encoding='utf-8'))
-ch = json.load(open(ch_p, encoding='utf-8'))
-cch = json.load(open(cch_p, encoding='utf-8'))
-alt = json.load(open(alt_p, encoding='utf-8'))
 q = int(base['config']['queries'])
 rows = []
 for s in base['summary']:
-    rows.append({
-        'algorithm': s['algorithm'],
-        'meanNs': s['meanNs'], 'p50Ns': s['medianNs'], 'p95Ns': s['p95Ns'], 'p99Ns': s['p99Ns'],
-        'preprocessNs': 0, 'amortizedMeanNs': s['meanNs'],
-        'correct': s['correct'], 'runs': s['runs'],
-    })
-for alg, d, meta_key in [
-    ('routingkit-ch', ch, 'routingKitCH'),
-    ('routingkit-cch', cch, 'routingKitCCH'),
-    ('alt', alt, 'alt'),
-]:
-    s = d['report']['summary']
-    m = d[meta_key]
+    rows.append({'algorithm': s['algorithm'], 'meanNs': s['meanNs'], 'p50Ns': s['medianNs'],
+                 'p95Ns': s['p95Ns'], 'p99Ns': s['p99Ns'], 'preprocessNs': 0,
+                 'amortizedMeanNs': s['meanNs'], 'correct': s['correct'], 'runs': s['runs']})
+for alg, file, meta_key in [('routingkit-ch','ch.json','routingKitCH'),
+                            ('routingkit-cch','cch.json','routingKitCCH'), ('alt','alt.json','alt')]:
+    d = json.load(open(os.path.join(out, file), encoding='utf-8'))
+    s, m = d['report']['summary'], d[meta_key]
     prep = int(m['preprocessNs'])
-    rows.append({
-        'algorithm': alg,
-        'meanNs': s['meanNs'], 'p50Ns': s['p50Ns'], 'p95Ns': s['p95Ns'], 'p99Ns': s['p99Ns'],
-        'preprocessNs': prep,
-        'amortizedMeanNs': s['meanNs'] + prep // max(q, 1),
-        'correct': s['queries'], 'runs': s['queries'],
-    })
+    rows.append({'algorithm': alg, 'meanNs': s['meanNs'], 'p50Ns': s['p50Ns'], 'p95Ns': s['p95Ns'],
+                 'p99Ns': s['p99Ns'], 'preprocessNs': prep,
+                 'amortizedMeanNs': s['meanNs'] + prep // max(q,1),
+                 'correct': s['queries'], 'runs': s['queries']})
+for name2 in ('ch','cch','alt'):
+    c = json.load(open(os.path.join(out, f'{name2}-consensus.json'), encoding='utf-8'))['report']['summary']
+    if c['consensusReached'] != c['queries']:
+        raise SystemExit(f'{name2} failed BiDijkstra consensus')
 rows.sort(key=lambda r: r['meanNs'])
-report = {
-    'dataset': name, 'metric': metric, 'seed': base['config']['seed'],
-    'nodes': base['nodes'], 'edges': base['edges'], 'queries': q,
-    'allCorrect': base['allCorrect'] and all(r['correct'] == r['runs'] for r in rows),
-    'rankingByQueryMean': rows,
-}
-json.dump(report, open(out_p, 'w', encoding='utf-8'), indent=2)
-print(json.dumps(report, indent=2))
+report = {'dataset': name, 'metric': metric, 'sourceUrl': url, 'seed': base['config']['seed'],
+          'nodes': base['nodes'], 'edges': base['edges'], 'queries': q,
+          'allCorrect': base['allCorrect'] and all(r['correct'] == r['runs'] for r in rows),
+          'rankingByQueryMean': rows}
+with open(os.path.join(out, 'summary.json'), 'w', encoding='utf-8') as f:
+    json.dump(report, f, indent=2, sort_keys=True)
+print(json.dumps(report, indent=2, sort_keys=True))
 PY
