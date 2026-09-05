@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - 'cmd/aegis-max/**'
+      - 'cmd/aegis-max-batch/**'
       - 'cmd/aegis-routingkit-export/**'
       - 'internal/maxsearch/**'
       - 'experimental/routingkit/**'
@@ -37,8 +38,8 @@ jobs:
           go-version: ${{ matrix.go }}
           cache: true
       - run: go test ./internal/maxsearch ./internal/search ./internal/graph
-      - run: go vet ./internal/maxsearch ./cmd/aegis-max ./cmd/aegis-routingkit-export
-      - run: go build ./cmd/aegis-max ./cmd/aegis-routingkit-export
+      - run: go vet ./internal/maxsearch ./cmd/aegis-max ./cmd/aegis-max-batch ./cmd/aegis-routingkit-export
+      - run: go build ./cmd/aegis-max ./cmd/aegis-max-batch ./cmd/aegis-routingkit-export
 
   integration:
     runs-on: ubuntu-latest
@@ -81,8 +82,9 @@ jobs:
           bash scripts/build-routingkit-ch-server.sh "$RUNNER_TEMP/RoutingKit" "$RUNNER_TEMP/aegis-routingkit-ch-server"
           go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
           go build -o "$RUNNER_TEMP/aegis-max" ./cmd/aegis-max
+          go build -o "$RUNNER_TEMP/aegis-max-batch" ./cmd/aegis-max-batch
           go build -o "$RUNNER_TEMP/aegis-routingkit-export" ./cmd/aegis-routingkit-export
-      - name: Export identical Hatfield graph and choose a reachable pair
+      - name: Export identical Hatfield graph and choose reachable pairs
         shell: bash
         run: |
           set -euo pipefail
@@ -100,14 +102,24 @@ jobs:
           if len(lines) < 4:
               raise SystemExit('RoutingKit export did not contain an edge')
           node_count, edge_count = map(int, lines[2].split())
-          if edge_count < 1:
-              raise SystemExit('RoutingKit export contains no edges')
-          source, target, _ = map(int, lines[3].split())
-          if source == target or not (0 <= source < node_count and 0 <= target < node_count):
-              raise SystemExit('first exported edge is invalid')
+          if edge_count < 3:
+              raise SystemExit('RoutingKit export contains too few edges')
+          pairs = []
+          for line in lines[3:3 + edge_count]:
+              source, target, _ = map(int, line.split())
+              if source != target and 0 <= source < node_count and 0 <= target < node_count:
+                  pairs.append((source, target))
+              if len(pairs) == 4:
+                  break
+          if len(pairs) < 3:
+              raise SystemExit('could not find enough reachable edge pairs')
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env:
-              env.write(f'CH_SOURCE={source}\nCH_TARGET={target}\n')
-          print(f'using guaranteed reachable directed edge {source}->{target}')
+              env.write(f'CH_SOURCE={pairs[0][0]}\nCH_TARGET={pairs[0][1]}\n')
+          q = os.path.join(os.environ['RUNNER_TEMP'], 'ch-queries.txt')
+          with open(q, 'w', encoding='utf-8') as out:
+              for source, target in pairs:
+                  out.write(f'{source} {target}\n')
+          print('using guaranteed reachable directed edges:', pairs)
           PY
       - name: Verify CH path and portfolio consensus
         shell: bash
@@ -141,6 +153,34 @@ jobs:
           assert two['result']['stats']['reachable'] is True
           assert two['result']['stats']['distance'] == one['result']['stats']['distance']
           print('routingkit-ch integration ok')
+          PY
+      - name: Reuse one CH preprocessing across a batch
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/RoutingKit/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          "$RUNNER_TEMP/aegis-max-batch" \
+            --graph "$RUNNER_TEMP/hatfield.aegis" \
+            --queries "$RUNNER_TEMP/ch-queries.txt" \
+            --routingkit-ch-server "$RUNNER_TEMP/aegis-routingkit-ch-server" \
+            --routingkit-ch-graph "$RUNNER_TEMP/hatfield.routingkit-ch" \
+            --algorithms routingkit-ch,bidijkstra,dijkstra \
+            --verify --consensus --summary-only \
+            > "$RUNNER_TEMP/ch-batch.json"
+          python3 - <<'PY'
+          import json, os
+          p = os.path.join(os.environ['RUNNER_TEMP'], 'ch-batch.json')
+          d = json.load(open(p))
+          s = d['report']['summary']
+          assert s['queries'] >= 3
+          assert s['reachable'] == s['queries']
+          assert s['consensusReached'] == s['queries']
+          assert s['winnerCounts'].get('routingkit-ch') == s['queries']
+          assert s['nativeFallbacks'] == 0
+          assert s['p50Ns'] > 0 and s['p95Ns'] > 0 and s['maxNs'] > 0
+          assert d['routingKitCH']['preprocessNs'] > 0
+          assert d['routingKitCH']['sidecarGraphBytes'] > 0
+          print('persistent routingkit-ch batch reuse ok')
           PY
       - name: Reject mismatched sidecar graph identity
         shell: bash
