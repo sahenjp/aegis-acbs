@@ -28,10 +28,17 @@ type routingKitCCHMetadata struct {
 	Fingerprint  string `json:"fingerprint"`
 }
 
-type outcomeWithRoutingKit struct {
+type altMetadata struct {
+	Landmarks          int    `json:"landmarks"`
+	PreprocessNS       int64  `json:"preprocessNs"`
+	DistanceTableBytes uint64 `json:"distanceTableBytes"`
+}
+
+type outcomeWithPreprocessing struct {
 	maxsearch.Outcome
 	RoutingKitCH  *routingKitCHMetadata  `json:"routingKitCH,omitempty"`
 	RoutingKitCCH *routingKitCCHMetadata `json:"routingKitCCH,omitempty"`
+	ALT           *altMetadata           `json:"alt,omitempty"`
 }
 
 func main() {
@@ -41,15 +48,16 @@ func main() {
 	modeText := flag.String("mode", string(maxsearch.ModeLatency), "portfolio mode: latency, balanced, or efficient")
 	parallel := flag.Int("parallel", 3, "maximum exact solvers to run concurrently")
 	hedge := flag.Duration("hedge-delay", 0, "balanced-mode delay before starting another exact solver")
-	timeout := flag.Duration("timeout", 30*time.Second, "total timeout including optional RoutingKit preprocessing")
+	timeout := flag.Duration("timeout", 30*time.Second, "total timeout including optional preprocessing")
 	verify := flag.Bool("verify", true, "validate every successful candidate before accepting it")
 	consensus := flag.Bool("consensus", false, "require two exact runners to agree on reachability and distance")
-	algorithmsText := flag.String("algorithms", "", "optional comma-separated exact algorithm order; routingkit-cch and routingkit-ch are supported with sidecar flags")
+	algorithmsText := flag.String("algorithms", "", "optional comma-separated exact algorithm order; routingkit-cch, routingkit-ch, and alt are supported with preprocessing flags")
 	planOnly := flag.Bool("plan-only", false, "print the deterministic portfolio plan without running a query")
 	routingKitCHServer := flag.String("routingkit-ch-server", "", "optional RoutingKit CH sidecar binary")
 	routingKitCHGraph := flag.String("routingkit-ch-graph", "", "graph produced by aegis-routingkit-export for the same Aegis graph")
 	routingKitCCHServer := flag.String("routingkit-cch-server", "", "optional RoutingKit CCH sidecar binary")
 	routingKitCCHGraph := flag.String("routingkit-cch-graph", "", "graph produced by aegis-routingkit-cch-export for the same Aegis graph")
+	altLandmarks := flag.Int("alt-landmarks", 0, "build an exact directed ALT runner with this many landmarks (1-32; 0 disables ALT)")
 	flag.Parse()
 	if *graphPath == "" || *source < 0 || *target < 0 {
 		flag.Usage()
@@ -60,6 +68,9 @@ func main() {
 	}
 	if (*routingKitCCHServer == "") != (*routingKitCCHGraph == "") {
 		fatal(errors.New("--routingkit-cch-server and --routingkit-cch-graph must be provided together"))
+	}
+	if *altLandmarks < 0 || *altLandmarks > 32 {
+		fatal(errors.New("--alt-landmarks must be between 0 and 32"))
 	}
 
 	g, err := graph.Load(*graphPath)
@@ -76,14 +87,18 @@ func main() {
 	}
 	useCH := *routingKitCHServer != ""
 	useCCH := *routingKitCCHServer != ""
+	useALT := *altLandmarks > 0
 	if containsAlgorithm(cfg.Algorithms, maxsearch.RoutingKitCH) && !useCH {
 		fatal(errors.New("routingkit-ch requires --routingkit-ch-server and --routingkit-ch-graph"))
 	}
 	if containsAlgorithm(cfg.Algorithms, maxsearch.RoutingKitCCH) && !useCCH {
 		fatal(errors.New("routingkit-cch requires --routingkit-cch-server and --routingkit-cch-graph"))
 	}
+	if containsAlgorithm(cfg.Algorithms, maxsearch.ALT) && !useALT {
+		fatal(errors.New("alt requires --alt-landmarks greater than zero"))
+	}
 	if *planOnly {
-		plan, err := buildPlan(g, *source, *target, cfg, useCCH, useCH)
+		plan, err := buildPlan(g, *source, *target, cfg, useCCH, useCH, useALT)
 		if err != nil {
 			fatal(err)
 		}
@@ -95,7 +110,7 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	if !useCH && !useCCH {
+	if !useCH && !useCCH && !useALT {
 		out, err := maxsearch.Run(ctx, g, *source, *target, cfg)
 		if err != nil {
 			fatal(err)
@@ -122,8 +137,15 @@ func main() {
 		}
 		defer func() { _ = ch.Close() }()
 	}
+	var alt *maxsearch.ALTRunner
+	if useALT {
+		alt, err = maxsearch.NewALTRunner(ctx, g, *altLandmarks)
+		if err != nil {
+			fatal(err)
+		}
+	}
 
-	runners, err := runnersWithRoutingKit(g, *source, *target, cfg, cch, ch)
+	runners, err := runnersWithPreprocessing(g, *source, *target, cfg, cch, ch, alt)
 	if err != nil {
 		fatal(err)
 	}
@@ -131,7 +153,7 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	wrapped := outcomeWithRoutingKit{Outcome: out}
+	wrapped := outcomeWithPreprocessing{Outcome: out}
 	if ch != nil {
 		wrapped.RoutingKitCH = &routingKitCHMetadata{
 			PreprocessNS: ch.PreprocessDuration().Nanoseconds(),
@@ -147,12 +169,19 @@ func main() {
 			Fingerprint:  cch.Fingerprint(),
 		}
 	}
+	if alt != nil {
+		wrapped.ALT = &altMetadata{
+			Landmarks:          alt.LandmarkCount(),
+			PreprocessNS:       alt.PreprocessDuration().Nanoseconds(),
+			DistanceTableBytes: alt.DistanceTableBytes(),
+		}
+	}
 	if err := encode(wrapped); err != nil {
 		fatal(err)
 	}
 }
 
-func runnersWithRoutingKit(g *graph.Graph, source, target int, cfg maxsearch.Config, cch *maxsearch.RoutingKitCCHRunner, ch *maxsearch.RoutingKitCHRunner) ([]maxsearch.Runner, error) {
+func runnersWithPreprocessing(g *graph.Graph, source, target int, cfg maxsearch.Config, cch *maxsearch.RoutingKitCCHRunner, ch *maxsearch.RoutingKitCHRunner, alt *maxsearch.ALTRunner) ([]maxsearch.Runner, error) {
 	algorithms := append([]search.Algorithm(nil), cfg.Algorithms...)
 	if len(algorithms) == 0 {
 		baseCfg := cfg
@@ -167,22 +196,24 @@ func runnersWithRoutingKit(g *graph.Graph, source, target int, cfg maxsearch.Con
 		if ch != nil {
 			algorithms = append(algorithms, maxsearch.RoutingKitCH)
 		}
+		if alt != nil {
+			algorithms = append(algorithms, maxsearch.ALT)
+		}
 		for _, candidate := range plan.Candidates {
 			algorithms = append(algorithms, candidate.Algorithm)
 		}
 	} else {
+		prefix := make([]search.Algorithm, 0, 3)
 		if cch != nil && !containsAlgorithm(algorithms, maxsearch.RoutingKitCCH) {
-			algorithms = append([]search.Algorithm{maxsearch.RoutingKitCCH}, algorithms...)
+			prefix = append(prefix, maxsearch.RoutingKitCCH)
 		}
 		if ch != nil && !containsAlgorithm(algorithms, maxsearch.RoutingKitCH) {
-			insertAt := 0
-			if cch != nil {
-				insertAt = 1
-			}
-			algorithms = append(algorithms, "")
-			copy(algorithms[insertAt+1:], algorithms[insertAt:])
-			algorithms[insertAt] = maxsearch.RoutingKitCH
+			prefix = append(prefix, maxsearch.RoutingKitCH)
 		}
+		if alt != nil && !containsAlgorithm(algorithms, maxsearch.ALT) {
+			prefix = append(prefix, maxsearch.ALT)
+		}
+		algorithms = append(prefix, algorithms...)
 	}
 
 	runners := make([]maxsearch.Runner, 0, len(algorithms))
@@ -203,6 +234,11 @@ func runnersWithRoutingKit(g *graph.Graph, source, target int, cfg maxsearch.Con
 				return nil, errors.New("routingkit-ch selected without a configured CH sidecar")
 			}
 			runners = append(runners, ch)
+		case maxsearch.ALT:
+			if alt == nil {
+				return nil, errors.New("alt selected without configured landmarks")
+			}
+			runners = append(runners, alt)
 		default:
 			runners = append(runners, maxsearch.BuiltinRunner{Algorithm: algorithm})
 		}
@@ -210,34 +246,34 @@ func runnersWithRoutingKit(g *graph.Graph, source, target int, cfg maxsearch.Con
 	return runners, nil
 }
 
-func buildPlan(g *graph.Graph, source, target int, cfg maxsearch.Config, useCCH, useCH bool) (maxsearch.Plan, error) {
+func buildPlan(g *graph.Graph, source, target int, cfg maxsearch.Config, useCCH, useCH, useALT bool) (maxsearch.Plan, error) {
 	if len(cfg.Algorithms) > 0 {
-		algorithms := append([]search.Algorithm(nil), cfg.Algorithms...)
-		if useCCH && !containsAlgorithm(algorithms, maxsearch.RoutingKitCCH) {
-			algorithms = append([]search.Algorithm{maxsearch.RoutingKitCCH}, algorithms...)
+		prefix := make([]search.Algorithm, 0, 3)
+		if useCCH && !containsAlgorithm(cfg.Algorithms, maxsearch.RoutingKitCCH) {
+			prefix = append(prefix, maxsearch.RoutingKitCCH)
 		}
-		if useCH && !containsAlgorithm(algorithms, maxsearch.RoutingKitCH) {
-			insertAt := 0
-			if useCCH {
-				insertAt = 1
-			}
-			algorithms = append(algorithms, "")
-			copy(algorithms[insertAt+1:], algorithms[insertAt:])
-			algorithms[insertAt] = maxsearch.RoutingKitCH
+		if useCH && !containsAlgorithm(cfg.Algorithms, maxsearch.RoutingKitCH) {
+			prefix = append(prefix, maxsearch.RoutingKitCH)
 		}
-		cfg.Algorithms = algorithms
+		if useALT && !containsAlgorithm(cfg.Algorithms, maxsearch.ALT) {
+			prefix = append(prefix, maxsearch.ALT)
+		}
+		cfg.Algorithms = append(prefix, cfg.Algorithms...)
 		return maxsearch.BuildPlan(g, source, target, cfg)
 	}
 	base, err := maxsearch.BuildPlan(g, source, target, cfg)
 	if err != nil {
 		return maxsearch.Plan{}, err
 	}
-	prefix := make([]maxsearch.Candidate, 0, 2)
+	prefix := make([]maxsearch.Candidate, 0, 3)
 	if useCCH {
 		prefix = append(prefix, maxsearch.Candidate{Algorithm: maxsearch.RoutingKitCCH, Role: "customizable-preprocessed-primary"})
 	}
 	if useCH {
 		prefix = append(prefix, maxsearch.Candidate{Algorithm: maxsearch.RoutingKitCH, Role: "preprocessed-primary"})
+	}
+	if useALT {
+		prefix = append(prefix, maxsearch.Candidate{Algorithm: maxsearch.ALT, Role: "landmark-preprocessed-exact"})
 	}
 	base.Candidates = append(prefix, base.Candidates...)
 	if base.MaxParallel > len(base.Candidates) {
