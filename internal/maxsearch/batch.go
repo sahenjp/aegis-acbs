@@ -48,9 +48,9 @@ type BatchReport struct {
 }
 
 // RunBatch executes query pairs sequentially while reusing the supplied Runner
-// instances. This is important for preprocessing-based solvers such as CH: the
-// expensive index is built once and its query cost can then be measured over a
-// realistic workload. ModeEfficient is recommended for stateful sidecars so a
+// instances. This is important for preprocessing-based solvers such as CH/CCH:
+// the expensive index is built once and its query cost can then be measured over
+// a realistic workload. ModeEfficient is recommended for stateful sidecars so a
 // competing runner cannot cancel a sidecar that should be reused later.
 func RunBatch(ctx context.Context, g *graph.Graph, queries []BatchQuery, cfg Config, runners []Runner) (BatchReport, error) {
 	if g == nil || len(g.Nodes) == 0 {
@@ -108,7 +108,7 @@ func RunBatch(ctx context.Context, g *graph.Graph, queries []BatchQuery, cfg Con
 		if sample.ConsensusReached {
 			report.Summary.ConsensusReached++
 		}
-		if sample.Winner != RoutingKitCH {
+		if sample.Winner != RoutingKitCH && sample.Winner != RoutingKitCCH {
 			report.Summary.NativeFallbacks++
 		}
 		report.Summary.WinnerCounts[sample.Winner]++
