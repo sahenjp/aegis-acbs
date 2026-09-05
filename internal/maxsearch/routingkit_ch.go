@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -26,16 +29,44 @@ type RoutingKitCHRunner struct {
 	stderr       bytes.Buffer
 	closed       bool
 	preprocessNS int64
+	fingerprint  string
+}
+
+// RoutingKitGraphFingerprint binds a sidecar graph to the exact node-indexed
+// weighted directed graph used by Aegis. Coordinates and OSM IDs are excluded
+// because CH queries depend on node indices and edge costs only.
+func RoutingKitGraphFingerprint(g *graph.Graph) string {
+	h := sha256.New()
+	var word [8]byte
+	write := func(value uint64) {
+		binary.LittleEndian.PutUint64(word[:], value)
+		_, _ = h.Write(word[:])
+	}
+	write(uint64(len(g.Nodes)))
+	write(uint64(g.EdgeCount))
+	for from := range g.Nodes {
+		for _, edge := range g.OutEdges(from) {
+			write(uint64(from))
+			write(uint64(edge.To))
+			write(edge.Cost)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // NewRoutingKitCHRunner starts a persistent RoutingKit CH process and waits for
-// preprocessing to finish. The graph file must be created by
-// cmd/aegis-routingkit-export from the same Aegis graph used for queries.
-func NewRoutingKitCHRunner(ctx context.Context, binary, graphPath string) (*RoutingKitCHRunner, error) {
-	if strings.TrimSpace(binary) == "" || strings.TrimSpace(graphPath) == "" {
+// preprocessing to finish. The sidecar graph must be created from g by
+// cmd/aegis-routingkit-export. A fingerprint handshake rejects stale or
+// mismatched sidecar graphs before any query result can be accepted.
+func NewRoutingKitCHRunner(ctx context.Context, binaryPath, graphPath string, g *graph.Graph) (*RoutingKitCHRunner, error) {
+	if strings.TrimSpace(binaryPath) == "" || strings.TrimSpace(graphPath) == "" {
 		return nil, errors.New("maxsearch: RoutingKit CH binary and graph are required")
 	}
-	cmd := exec.CommandContext(ctx, binary, graphPath)
+	if g == nil || len(g.Nodes) == 0 {
+		return nil, errors.New("maxsearch: RoutingKit CH requires a non-empty Aegis graph")
+	}
+	expectedFingerprint := RoutingKitGraphFingerprint(g)
+	cmd := exec.CommandContext(ctx, binaryPath, graphPath)
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -45,9 +76,10 @@ func NewRoutingKitCHRunner(ctx context.Context, binary, graphPath string) (*Rout
 		return nil, err
 	}
 	runner := &RoutingKitCHRunner{
-		cmd:    cmd,
-		stdin:  bufio.NewWriterSize(stdinPipe, 64<<10),
-		stdout: bufio.NewReaderSize(stdoutPipe, 1<<20),
+		cmd:         cmd,
+		stdin:       bufio.NewWriterSize(stdinPipe, 64<<10),
+		stdout:      bufio.NewReaderSize(stdoutPipe, 1<<20),
+		fingerprint: expectedFingerprint,
 	}
 	cmd.Stderr = &runner.stderr
 	if err := cmd.Start(); err != nil {
@@ -59,7 +91,7 @@ func NewRoutingKitCHRunner(ctx context.Context, binary, graphPath string) (*Rout
 		return nil, runner.protocolError("read READY", err)
 	}
 	fields := strings.Fields(line)
-	if len(fields) != 2 || fields[0] != "READY" {
+	if len(fields) != 3 || fields[0] != "READY" {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return nil, runner.protocolError("invalid READY response", nil)
@@ -69,6 +101,11 @@ func NewRoutingKitCHRunner(ctx context.Context, binary, graphPath string) (*Rout
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return nil, runner.protocolError("invalid preprocessing duration", err)
+	}
+	if fields[2] != expectedFingerprint {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("maxsearch: RoutingKit CH graph fingerprint mismatch: sidecar=%s aegis=%s", fields[2], expectedFingerprint)
 	}
 	runner.preprocessNS = preprocessNS
 	return runner, nil
@@ -80,6 +117,8 @@ func (r *RoutingKitCHRunner) PreprocessDuration() time.Duration {
 	return time.Duration(r.preprocessNS)
 }
 
+func (r *RoutingKitCHRunner) Fingerprint() string { return r.fingerprint }
+
 func (r *RoutingKitCHRunner) Run(ctx context.Context, g *graph.Graph, source, target int) (search.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return search.Result{}, err
@@ -87,12 +126,31 @@ func (r *RoutingKitCHRunner) Run(ctx context.Context, g *graph.Graph, source, ta
 	if source < 0 || source >= len(g.Nodes) || target < 0 || target >= len(g.Nodes) {
 		return search.Result{}, errors.New("maxsearch: source or target is out of range")
 	}
+	if RoutingKitGraphFingerprint(g) != r.fingerprint {
+		return search.Result{}, errors.New("maxsearch: RoutingKit CH runner used with a different Aegis graph")
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
 		return search.Result{}, errors.New("maxsearch: RoutingKit CH runner is closed")
 	}
+
+	// A sidecar query is a blocking stream operation. If another exact runner
+	// wins or the caller times out, terminating this process promptly releases
+	// the blocked read. A cancelled sidecar is intentionally not reused.
+	queryDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			if r.cmd.Process != nil {
+				_ = r.cmd.Process.Kill()
+			}
+		case <-queryDone:
+		}
+	}()
+	defer close(queryDone)
+
 	if _, err := fmt.Fprintf(r.stdin, "Q %d %d\n", source, target); err != nil {
 		return search.Result{}, r.protocolError("write query", err)
 	}
@@ -101,6 +159,9 @@ func (r *RoutingKitCHRunner) Run(ctx context.Context, g *graph.Graph, source, ta
 	}
 	line, err := r.stdout.ReadString('\n')
 	if err != nil {
+		if ctx.Err() != nil {
+			return search.Result{}, ctx.Err()
+		}
 		return search.Result{}, r.protocolError("read query result", err)
 	}
 	result, err := parseRoutingKitCHResponse(line, len(g.Nodes))
@@ -130,7 +191,11 @@ func (r *RoutingKitCHRunner) Close() error {
 		return flushErr
 	}
 	if waitErr != nil {
-		return r.protocolError("wait for RoutingKit CH server", waitErr)
+		// Cancellation is expected when another portfolio member wins.
+		if r.cmd.ProcessState != nil && !r.cmd.ProcessState.Success() {
+			return r.protocolError("wait for RoutingKit CH server", waitErr)
+		}
+		return waitErr
 	}
 	return nil
 }
