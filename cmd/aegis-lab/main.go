@@ -42,7 +42,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  aegis-lab mcsp --inputs N --target HEX [--max-gates N] [--max-states N] [--workers N] [--verify-minimal]")
 	fmt.Fprintln(os.Stderr, "  aegis-lab catalog --inputs N [--max-gates N] [--max-states N] [--workers N] [--include-circuits]")
-	fmt.Fprintln(os.Stderr, "  aegis-lab circuit-sat --circuit FILE [--workers N]")
+	fmt.Fprintln(os.Stderr, "  aegis-lab circuit-sat --circuit FILE [--backend cpu|cuda] [--workers N] [--cuda-bin FILE]")
 }
 
 func runMCSP(args []string) error {
@@ -113,7 +113,11 @@ func runCatalog(args []string) error {
 func runCircuitSAT(args []string) error {
 	fs := flag.NewFlagSet("circuit-sat", flag.ContinueOnError)
 	path := fs.String("circuit", "", "path to a NAND circuit JSON file")
-	workers := fs.Int("workers", runtime.GOMAXPROCS(0), "parallel 64-assignment block workers")
+	backend := fs.String("backend", "cpu", "exact backend: cpu or cuda")
+	workers := fs.Int("workers", runtime.GOMAXPROCS(0), "CPU parallel 64-assignment block workers")
+	cudaBin := fs.String("cuda-bin", "bin/aegis-circuitsat-cuda", "CUDA sidecar executable")
+	cudaChunk := fs.Uint64("cuda-chunk", 1<<20, "assignments evaluated per CUDA allocation")
+	crossCheckUnsat := fs.Bool("cross-check-unsat", false, "for CUDA UNSAT, repeat exhaustive CPU search before accepting the result")
 	timeout := fs.Duration("timeout", 30*time.Second, "search timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -131,13 +135,30 @@ func runCircuitSAT(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	result, err := circuitsat.Solve(ctx, circuit, circuitsat.Config{Workers: *workers})
+
+	var result circuitsat.Result
+	switch *backend {
+	case "cpu":
+		result, err = circuitsat.Solve(ctx, circuit, circuitsat.Config{Workers: *workers})
+	case "cuda":
+		result, err = circuitsat.SolveCUDA(ctx, circuit, circuitsat.CUDAConfig{Binary: *cudaBin, Chunk: *cudaChunk})
+	default:
+		return fmt.Errorf("unknown circuit-sat backend %q", *backend)
+	}
 	if err != nil {
 		return err
 	}
 	if result.Satisfiable {
 		if err := circuitsat.VerifyAssignment(circuit, result.Assignment); err != nil {
 			return err
+		}
+	} else if *backend == "cuda" && *crossCheckUnsat {
+		cpuResult, cpuErr := circuitsat.Solve(ctx, circuit, circuitsat.Config{Workers: *workers})
+		if cpuErr != nil {
+			return fmt.Errorf("CUDA UNSAT cross-check failed: %w", cpuErr)
+		}
+		if cpuResult.Satisfiable {
+			return errors.New("CUDA backend reported UNSAT but CPU reference found a witness")
 		}
 	}
 	return encodeJSON(result)
