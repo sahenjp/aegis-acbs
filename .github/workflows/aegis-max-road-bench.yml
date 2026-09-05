@@ -30,6 +30,15 @@ on:
         required: true
         default: '1000'
         type: string
+      alt_landmarks:
+        description: Exact directed ALT landmark count
+        required: true
+        default: '8'
+        type: choice
+        options:
+          - '4'
+          - '8'
+          - '16'
       runner:
         description: Runner label; Japan is better suited to a large self-hosted runner
         required: true
@@ -50,6 +59,7 @@ jobs:
       QUERIES: ${{ inputs.queries || '300' }}
       DATASET: ${{ inputs.dataset || 'andorra' }}
       METRIC: ${{ inputs.metric || 'time' }}
+      ALT_LANDMARKS: ${{ inputs.alt_landmarks || '8' }}
       ROUTINGKIT_COMMIT: 54d49bb0cdea56dde182357522e4e86a03c57852
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,8 +75,13 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$QUERIES" =~ ^[1-9][0-9]*$ ]] || { echo "queries must be a positive integer" >&2; exit 2; }
+          [[ "$ALT_LANDMARKS" =~ ^[1-9][0-9]*$ ]] || { echo "ALT landmarks must be a positive integer" >&2; exit 2; }
           if (( QUERIES > 100000 )); then
             echo "queries is capped at 100000" >&2
+            exit 2
+          fi
+          if (( ALT_LANDMARKS > 32 )); then
+            echo "ALT landmarks is capped at 32" >&2
             exit 2
           fi
           if [[ "$DATASET" == japan && "${{ inputs.runner || 'ubuntu-latest' }}" == ubuntu-latest ]]; then
@@ -171,7 +186,7 @@ jobs:
           print('query pairs:', len(pairs), 'verification pairs:', min(50, len(pairs)))
           PY
 
-      - name: Measure persistent CH and CCH query latency
+      - name: Measure persistent CH CCH and ALT query latency
         shell: bash
         run: |
           set -euo pipefail
@@ -189,8 +204,13 @@ jobs:
             --routingkit-cch-graph "$RUNNER_TEMP/road.routingkit-cch" \
             --algorithms routingkit-cch --verify --summary-only \
             --timeout 120m > "$OUT/cch.json"
+          "$RUNNER_TEMP/aegis-max-batch" \
+            --graph "$RUNNER_TEMP/road.aegis" --queries "$RUNNER_TEMP/queries.txt" \
+            --alt-landmarks "$ALT_LANDMARKS" --algorithms alt \
+            --verify --summary-only --timeout 120m \
+            > "$OUT/alt.json"
 
-      - name: Cross-check CH and CCH against 64-bit BiDijkstra
+      - name: Cross-check preprocessed solvers against 64-bit BiDijkstra
         shell: bash
         run: |
           set -euo pipefail
@@ -208,6 +228,11 @@ jobs:
             --routingkit-cch-graph "$RUNNER_TEMP/road.routingkit-cch" \
             --algorithms routingkit-cch,bidijkstra --verify --consensus --summary-only \
             --timeout 120m > "$OUT/cch-consensus.json"
+          "$RUNNER_TEMP/aegis-max-batch" \
+            --graph "$RUNNER_TEMP/road.aegis" --queries "$RUNNER_TEMP/verify-queries.txt" \
+            --alt-landmarks "$ALT_LANDMARKS" --algorithms alt,bidijkstra \
+            --verify --consensus --summary-only --timeout 120m \
+            > "$OUT/alt-consensus.json"
 
       - name: Build comparable summary and break-even estimates
         shell: bash
@@ -220,8 +245,10 @@ jobs:
           native = json.load(open(os.path.join(out, 'native.json')))
           ch = json.load(open(os.path.join(out, 'ch.json')))
           cch = json.load(open(os.path.join(out, 'cch.json')))
+          alt = json.load(open(os.path.join(out, 'alt.json')))
           chv = json.load(open(os.path.join(out, 'ch-consensus.json')))
           cchv = json.load(open(os.path.join(out, 'cch-consensus.json')))
+          altv = json.load(open(os.path.join(out, 'alt-consensus.json')))
 
           samples = {}
           for item in native.get('samples', []):
@@ -255,8 +282,10 @@ jobs:
 
           chs = ch['report']['summary']
           cchs = cch['report']['summary']
+          alts = alt['report']['summary']
           chmeta = ch['routingKitCH']
           cchmeta = cch['routingKitCCH']
+          altmeta = alt['alt']
           summary = {
               'dataset': os.environ['DATASET'],
               'metric': os.environ['METRIC'],
@@ -281,11 +310,19 @@ jobs:
                   'breakEvenQueriesVsFastestNativeP50': break_even(cchmeta['preprocessNs'], cchs['p50Ns']),
                   'consensus': cchv['report']['summary'],
               },
+              'alt': {
+                  'query': alts,
+                  'landmarks': altmeta['landmarks'],
+                  'preprocessNs': altmeta['preprocessNs'],
+                  'distanceTableBytes': altmeta['distanceTableBytes'],
+                  'breakEvenQueriesVsFastestNativeP50': break_even(altmeta['preprocessNs'], alts['p50Ns']),
+                  'consensus': altv['report']['summary'],
+              },
           }
-          if summary['ch']['consensus']['consensusReached'] != summary['ch']['consensus']['queries']:
-              raise SystemExit('CH failed native consensus')
-          if summary['cch']['consensus']['consensusReached'] != summary['cch']['consensus']['queries']:
-              raise SystemExit('CCH failed native consensus')
+          for name in ('ch', 'cch', 'alt'):
+              consensus = summary[name]['consensus']
+              if consensus['consensusReached'] != consensus['queries']:
+                  raise SystemExit(f'{name} failed native consensus')
           path = os.path.join(out, 'summary.json')
           json.dump(summary, open(path, 'w'), indent=2, sort_keys=True)
           print(json.dumps(summary, indent=2, sort_keys=True))
@@ -294,7 +331,7 @@ jobs:
       - name: Upload benchmark evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: aegis-max-${{ env.DATASET }}-${{ env.METRIC }}-${{ env.QUERIES }}
+          name: aegis-max-${{ env.DATASET }}-${{ env.METRIC }}-${{ env.QUERIES }}-alt${{ env.ALT_LANDMARKS }}
           path: ${{ runner.temp }}/aegis-max-road-bench/
           if-no-files-found: error
           retention-days: 30
