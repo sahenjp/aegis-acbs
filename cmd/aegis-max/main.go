@@ -51,7 +51,7 @@ func main() {
 	timeout := flag.Duration("timeout", 30*time.Second, "total timeout including optional preprocessing")
 	verify := flag.Bool("verify", true, "validate every successful candidate before accepting it")
 	consensus := flag.Bool("consensus", false, "require two exact runners to agree on reachability and distance")
-	algorithmsText := flag.String("algorithms", "", "optional comma-separated exact algorithm order; routingkit-cch, routingkit-ch, and alt are supported with preprocessing flags")
+	algorithmsText := flag.String("algorithms", "", "optional comma-separated exact algorithm order; when set, the order is used exactly")
 	planOnly := flag.Bool("plan-only", false, "print the deterministic portfolio plan without running a query")
 	routingKitCHServer := flag.String("routingkit-ch-server", "", "optional RoutingKit CH sidecar binary")
 	routingKitCHGraph := flag.String("routingkit-ch-graph", "", "graph produced by aegis-routingkit-export for the same Aegis graph")
@@ -85,20 +85,27 @@ func main() {
 		Consensus:   *consensus,
 		Algorithms:  parseAlgorithms(*algorithmsText),
 	}
-	useCH := *routingKitCHServer != ""
-	useCCH := *routingKitCCHServer != ""
-	useALT := *altLandmarks > 0
-	if containsAlgorithm(cfg.Algorithms, maxsearch.RoutingKitCH) && !useCH {
+
+	configuredCH := *routingKitCHServer != ""
+	configuredCCH := *routingKitCCHServer != ""
+	configuredALT := *altLandmarks > 0
+	if containsAlgorithm(cfg.Algorithms, maxsearch.RoutingKitCH) && !configuredCH {
 		fatal(errors.New("routingkit-ch requires --routingkit-ch-server and --routingkit-ch-graph"))
 	}
-	if containsAlgorithm(cfg.Algorithms, maxsearch.RoutingKitCCH) && !useCCH {
+	if containsAlgorithm(cfg.Algorithms, maxsearch.RoutingKitCCH) && !configuredCCH {
 		fatal(errors.New("routingkit-cch requires --routingkit-cch-server and --routingkit-cch-graph"))
 	}
-	if containsAlgorithm(cfg.Algorithms, maxsearch.ALT) && !useALT {
+	if containsAlgorithm(cfg.Algorithms, maxsearch.ALT) && !configuredALT {
 		fatal(errors.New("alt requires --alt-landmarks greater than zero"))
 	}
+
+	explicitAlgorithms := len(cfg.Algorithms) > 0
+	useCH := configuredCH && (!explicitAlgorithms || containsAlgorithm(cfg.Algorithms, maxsearch.RoutingKitCH))
+	useCCH := configuredCCH && (!explicitAlgorithms || containsAlgorithm(cfg.Algorithms, maxsearch.RoutingKitCCH))
+	useALT := configuredALT && (!explicitAlgorithms || containsAlgorithm(cfg.Algorithms, maxsearch.ALT))
+
 	if *planOnly {
-		plan, err := buildPlan(g, *source, *target, cfg, useCCH, useCH, useALT)
+		plan, err := buildPlan(g, *source, *target, cfg, useCH, useCCH, useALT)
 		if err != nil {
 			fatal(err)
 		}
@@ -121,14 +128,6 @@ func main() {
 		return
 	}
 
-	var cch *maxsearch.RoutingKitCCHRunner
-	if useCCH {
-		cch, err = maxsearch.NewRoutingKitCCHRunner(ctx, *routingKitCCHServer, *routingKitCCHGraph, g)
-		if err != nil {
-			fatal(err)
-		}
-		defer func() { _ = cch.Close() }()
-	}
 	var ch *maxsearch.RoutingKitCHRunner
 	if useCH {
 		ch, err = maxsearch.NewRoutingKitCHRunner(ctx, *routingKitCHServer, *routingKitCHGraph, g)
@@ -136,6 +135,14 @@ func main() {
 			fatal(err)
 		}
 		defer func() { _ = ch.Close() }()
+	}
+	var cch *maxsearch.RoutingKitCCHRunner
+	if useCCH {
+		cch, err = maxsearch.NewRoutingKitCCHRunner(ctx, *routingKitCCHServer, *routingKitCCHGraph, g)
+		if err != nil {
+			fatal(err)
+		}
+		defer func() { _ = cch.Close() }()
 	}
 	var alt *maxsearch.ALTRunner
 	if useALT {
@@ -145,7 +152,7 @@ func main() {
 		}
 	}
 
-	runners, err := runnersWithPreprocessing(g, *source, *target, cfg, cch, ch, alt)
+	runners, err := runnersWithPreprocessing(g, *source, *target, cfg, ch, cch, alt)
 	if err != nil {
 		fatal(err)
 	}
@@ -181,7 +188,7 @@ func main() {
 	}
 }
 
-func runnersWithPreprocessing(g *graph.Graph, source, target int, cfg maxsearch.Config, cch *maxsearch.RoutingKitCCHRunner, ch *maxsearch.RoutingKitCHRunner, alt *maxsearch.ALTRunner) ([]maxsearch.Runner, error) {
+func runnersWithPreprocessing(g *graph.Graph, source, target int, cfg maxsearch.Config, ch *maxsearch.RoutingKitCHRunner, cch *maxsearch.RoutingKitCCHRunner, alt *maxsearch.ALTRunner) ([]maxsearch.Runner, error) {
 	algorithms := append([]search.Algorithm(nil), cfg.Algorithms...)
 	if len(algorithms) == 0 {
 		baseCfg := cfg
@@ -190,11 +197,14 @@ func runnersWithPreprocessing(g *graph.Graph, source, target int, cfg maxsearch.
 		if err != nil {
 			return nil, err
 		}
-		if cch != nil {
-			algorithms = append(algorithms, maxsearch.RoutingKitCCH)
-		}
+		// Static-road evidence currently favors CH. CCH follows because its
+		// customization phase is valuable for future reweighting, then ALT gives
+		// a native uint64 preprocessed fallback before the ordinary exact runners.
 		if ch != nil {
 			algorithms = append(algorithms, maxsearch.RoutingKitCH)
+		}
+		if cch != nil {
+			algorithms = append(algorithms, maxsearch.RoutingKitCCH)
 		}
 		if alt != nil {
 			algorithms = append(algorithms, maxsearch.ALT)
@@ -202,18 +212,6 @@ func runnersWithPreprocessing(g *graph.Graph, source, target int, cfg maxsearch.
 		for _, candidate := range plan.Candidates {
 			algorithms = append(algorithms, candidate.Algorithm)
 		}
-	} else {
-		prefix := make([]search.Algorithm, 0, 3)
-		if cch != nil && !containsAlgorithm(algorithms, maxsearch.RoutingKitCCH) {
-			prefix = append(prefix, maxsearch.RoutingKitCCH)
-		}
-		if ch != nil && !containsAlgorithm(algorithms, maxsearch.RoutingKitCH) {
-			prefix = append(prefix, maxsearch.RoutingKitCH)
-		}
-		if alt != nil && !containsAlgorithm(algorithms, maxsearch.ALT) {
-			prefix = append(prefix, maxsearch.ALT)
-		}
-		algorithms = append(prefix, algorithms...)
 	}
 
 	runners := make([]maxsearch.Runner, 0, len(algorithms))
@@ -224,16 +222,16 @@ func runnersWithPreprocessing(g *graph.Graph, source, target int, cfg maxsearch.
 		}
 		seen[algorithm] = struct{}{}
 		switch algorithm {
-		case maxsearch.RoutingKitCCH:
-			if cch == nil {
-				return nil, errors.New("routingkit-cch selected without a configured CCH sidecar")
-			}
-			runners = append(runners, cch)
 		case maxsearch.RoutingKitCH:
 			if ch == nil {
 				return nil, errors.New("routingkit-ch selected without a configured CH sidecar")
 			}
 			runners = append(runners, ch)
+		case maxsearch.RoutingKitCCH:
+			if cch == nil {
+				return nil, errors.New("routingkit-cch selected without a configured CCH sidecar")
+			}
+			runners = append(runners, cch)
 		case maxsearch.ALT:
 			if alt == nil {
 				return nil, errors.New("alt selected without configured landmarks")
@@ -246,19 +244,10 @@ func runnersWithPreprocessing(g *graph.Graph, source, target int, cfg maxsearch.
 	return runners, nil
 }
 
-func buildPlan(g *graph.Graph, source, target int, cfg maxsearch.Config, useCCH, useCH, useALT bool) (maxsearch.Plan, error) {
+func buildPlan(g *graph.Graph, source, target int, cfg maxsearch.Config, useCH, useCCH, useALT bool) (maxsearch.Plan, error) {
 	if len(cfg.Algorithms) > 0 {
-		prefix := make([]search.Algorithm, 0, 3)
-		if useCCH && !containsAlgorithm(cfg.Algorithms, maxsearch.RoutingKitCCH) {
-			prefix = append(prefix, maxsearch.RoutingKitCCH)
-		}
-		if useCH && !containsAlgorithm(cfg.Algorithms, maxsearch.RoutingKitCH) {
-			prefix = append(prefix, maxsearch.RoutingKitCH)
-		}
-		if useALT && !containsAlgorithm(cfg.Algorithms, maxsearch.ALT) {
-			prefix = append(prefix, maxsearch.ALT)
-		}
-		cfg.Algorithms = append(prefix, cfg.Algorithms...)
+		// Explicit experiments must be reproducible: never inject or reorder
+		// configured preprocessing runners when --algorithms was supplied.
 		return maxsearch.BuildPlan(g, source, target, cfg)
 	}
 	base, err := maxsearch.BuildPlan(g, source, target, cfg)
@@ -266,11 +255,11 @@ func buildPlan(g *graph.Graph, source, target int, cfg maxsearch.Config, useCCH,
 		return maxsearch.Plan{}, err
 	}
 	prefix := make([]maxsearch.Candidate, 0, 3)
-	if useCCH {
-		prefix = append(prefix, maxsearch.Candidate{Algorithm: maxsearch.RoutingKitCCH, Role: "customizable-preprocessed-primary"})
-	}
 	if useCH {
 		prefix = append(prefix, maxsearch.Candidate{Algorithm: maxsearch.RoutingKitCH, Role: "preprocessed-primary"})
+	}
+	if useCCH {
+		prefix = append(prefix, maxsearch.Candidate{Algorithm: maxsearch.RoutingKitCCH, Role: "customizable-preprocessed"})
 	}
 	if useALT {
 		prefix = append(prefix, maxsearch.Candidate{Algorithm: maxsearch.ALT, Role: "landmark-preprocessed-exact"})
