@@ -4,7 +4,6 @@ import (
 	"container/heap"
 	"context"
 	"errors"
-	"math"
 	"time"
 
 	"github.com/lasder-ca/aegis-acbs/internal/graph"
@@ -294,7 +293,7 @@ func reconstructALTPath(prev []int, source, target int) []int {
 }
 
 func altSaturatingAdd(a, b uint64) uint64 {
-	if a == altInfinity || b == altInfinity || a > math.MaxUint64-b {
+	if a == altInfinity || b == altInfinity || a > altInfinity-b {
 		return altInfinity
 	}
 	return a + b
