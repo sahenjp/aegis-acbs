@@ -53,7 +53,7 @@ func main() {
 	routingKitCCHServer := flag.String("routingkit-cch-server", "", "optional RoutingKit CCH sidecar binary")
 	routingKitCCHGraph := flag.String("routingkit-cch-graph", "", "graph produced by aegis-routingkit-cch-export")
 	altLandmarks := flag.Int("alt-landmarks", 0, "build and reuse an exact directed ALT runner with this many landmarks (1-32; 0 disables ALT)")
-	algorithmsText := flag.String("algorithms", "", "comma-separated exact runner order; defaults to configured CCH, CH, ALT, bidijkstra, dijkstra")
+	algorithmsText := flag.String("algorithms", "", "comma-separated exact runner order; defaults to configured CH, CCH, ALT, bidijkstra, dijkstra")
 	consensus := flag.Bool("consensus", false, "require two successful exact runners to agree for every query")
 	verify := flag.Bool("verify", true, "validate every successful path")
 	summaryOnly := flag.Bool("summary-only", false, "omit per-query samples from JSON output")
@@ -89,11 +89,11 @@ func main() {
 	}
 	algorithms := parseAlgorithms(*algorithmsText)
 	if len(algorithms) == 0 {
-		if useCCH {
-			algorithms = append(algorithms, maxsearch.RoutingKitCCH)
-		}
 		if useCH {
 			algorithms = append(algorithms, maxsearch.RoutingKitCH)
+		}
+		if useCCH {
+			algorithms = append(algorithms, maxsearch.RoutingKitCCH)
 		}
 		if useALT {
 			algorithms = append(algorithms, maxsearch.ALT)
@@ -113,14 +113,6 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	var cch *maxsearch.RoutingKitCCHRunner
-	if useCCH {
-		cch, err = maxsearch.NewRoutingKitCCHRunner(ctx, *routingKitCCHServer, *routingKitCCHGraph, g)
-		if err != nil {
-			fatal(err)
-		}
-		defer func() { _ = cch.Close() }()
-	}
 	var ch *maxsearch.RoutingKitCHRunner
 	if useCH {
 		ch, err = maxsearch.NewRoutingKitCHRunner(ctx, *routingKitCHServer, *routingKitCHGraph, g)
@@ -128,6 +120,14 @@ func main() {
 			fatal(err)
 		}
 		defer func() { _ = ch.Close() }()
+	}
+	var cch *maxsearch.RoutingKitCCHRunner
+	if useCCH {
+		cch, err = maxsearch.NewRoutingKitCCHRunner(ctx, *routingKitCCHServer, *routingKitCCHGraph, g)
+		if err != nil {
+			fatal(err)
+		}
+		defer func() { _ = cch.Close() }()
 	}
 	var alt *maxsearch.ALTRunner
 	if useALT {
@@ -145,16 +145,16 @@ func main() {
 		}
 		seen[algorithm] = struct{}{}
 		switch algorithm {
-		case maxsearch.RoutingKitCCH:
-			if cch == nil {
-				fatal(errors.New("routingkit-cch selected without a configured CCH sidecar"))
-			}
-			runners = append(runners, cch)
 		case maxsearch.RoutingKitCH:
 			if ch == nil {
 				fatal(errors.New("routingkit-ch selected without a configured CH sidecar"))
 			}
 			runners = append(runners, ch)
+		case maxsearch.RoutingKitCCH:
+			if cch == nil {
+				fatal(errors.New("routingkit-cch selected without a configured CCH sidecar"))
+			}
+			runners = append(runners, cch)
 		case maxsearch.ALT:
 			if alt == nil {
 				fatal(errors.New("alt selected without configured landmarks"))
