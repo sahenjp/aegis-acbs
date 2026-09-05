@@ -12,6 +12,7 @@ Aegis Max はまず既存の `search.Select` と `search.Explain` から第一�
 A* が第一候補       : A* -> 双方向 Dijkstra -> ACBS -> Dijkstra
 双方向 Dijkstra     : BiDijkstra -> A* または Dijkstra -> ACBS -> ...
 Dijkstra            : Dijkstra -> BiDijkstra -> ACBS -> ...
+前処理済み CH       : RoutingKit CH -> native uint64 exact runner -> ...
 ```
 
 固定順を「常に最速」とは扱いません。selector の予測仕事量も plan に保存し、後から実測と比較できるようにしています。
@@ -53,6 +54,61 @@ bin/aegis-max --graph graph.aegis --source 100 --target 200 \
 
 これは一般の最適性証明を二重化する万能手段ではありません。既存 runner はそれぞれのアルゴリズム側で厳密性を保証し、consensus は統合時の追加検査として使います。
 
+## RoutingKit CH runner
+
+静的な重み付き道路グラフでは、問い合わせごとに全探索する方式だけでなく前処理型の Contraction Hierarchy を候補にできます。RoutingKit は通常の Go ビルド依存にはせず、常駐 sidecar として接続します。
+
+### 準備
+
+RoutingKit をビルド済みのディレクトリから sidecar を作ります。
+
+```bash
+ROUTINGKIT_DIR=/path/to/RoutingKit \
+  bash scripts/build-routingkit-ch-server.sh
+
+go build -o bin/aegis-routingkit-export ./cmd/aegis-routingkit-export
+
+bin/aegis-routingkit-export \
+  --graph graph.aegis \
+  --output graph.routingkit-ch
+```
+
+export 時には、ノード数・辺数・`from/to/cost` を SHA-256 へ入れた graph fingerprint を保存します。sidecar 起動時に Aegis 側でも同じ fingerprint を計算し、異なる graph や古い index を誤って使った場合は query 前に拒否します。問い合わせごとに全辺を再ハッシュすることはせず、起動時の照合後は同じ `*graph.Graph` instance であることだけを確認します。
+
+### 実行
+
+```bash
+bin/aegis-max \
+  --graph graph.aegis \
+  --source 100 --target 200 \
+  --mode latency --parallel 2 \
+  --algorithms routingkit-ch,bidijkstra \
+  --routingkit-ch-server bin/aegis-routingkit-ch-server \
+  --routingkit-ch-graph graph.routingkit-ch \
+  --verify --consensus
+```
+
+CH が到達可能な結果を返した場合でも、復元された node path を Aegis の元 graph 上で再評価し、辺の連続性と合計 cost が報告距離に一致することを確認してから採用します。出力の `routingKitCH.preprocessNs` に CH 構築時間、`routingKitCH.fingerprint` に照合済み graph identity を残します。
+
+### 31-bit 距離上限
+
+現在固定している RoutingKit の CH は有限距離に `inf_weight = 2^31-1` を使います。一方 Aegis の OSM distance metric はミリメートル単位なので、単純換算では約 2147 km がこの有限値上限になります。Aegis 自体は `uint64` cost を使うため、この差を無視すると本当は非常に長い経路が存在するケースを RoutingKit が到達不能として返す可能性があります。
+
+そのため `routingkit-ch` は `U`（到達不能）を Aegis の厳密な到達不能証明として採用しません。CH はその候補では失敗扱いとなり、双方向 Dijkstra、Dijkstra、ACBS など native `uint64` runner が最終的な到達可能性を確定します。到達可能な CH 結果は実 path があるため、元 graph 上で独立検証できます。
+
+### 前処理の評価
+
+現在の単発 CLI 実行では sidecar を起動するたび CH を構築するため、単一 query の wall time だけで CH の優位性を評価してはいけません。前処理型アルゴリズムの性能比較では、少なくとも以下を分けて報告します。
+
+- CH preprocessing time
+- index / process memory
+- 前処理後の query latency
+- 前処理を何 query で償却するか
+- p50 / p95 / p99
+- native exact runner との正確性一致率
+
+長寿命 server や batch workload では同じ CH instance を複数 query に再利用する設計を前提にします。
+
 ## 外部 runner
 
 `RunWithRunners` を追加しています。新しい解法は `Runner` interface を実装すれば、`search.Run` の組み込み case を変更せずポートフォリオ層へ接続できます。
@@ -64,7 +120,7 @@ type Runner interface {
 }
 ```
 
-この入口は、既存の研究ブランチにある CH/CCH 系、別言語 sidecar、将来の新しい厳密最短路アルゴリズムを比較するためのものです。統合前には必ず同じ graph、query pair、検証器で測定します。
+この入口は、CH/CCH 系、別言語 sidecar、将来の新しい厳密最短路アルゴリズムを比較するためのものです。統合前には必ず同じ graph、query pair、検証器で測定します。
 
 ## plan の確認
 
