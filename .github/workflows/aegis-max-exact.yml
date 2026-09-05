@@ -1,0 +1,69 @@
+name: Aegis Max Exact
+
+on:
+  push:
+    branches: [research/aegis-max-exact]
+  pull_request:
+    paths:
+      - 'cmd/aegis-max/**'
+      - 'internal/maxsearch/**'
+      - 'docs/AEGIS_MAX_EXACT.md'
+      - '.github/workflows/aegis-max-exact.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aegis-max-exact-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.23.x', '1.26.x']
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+      - run: go test ./internal/maxsearch ./internal/search ./internal/graph
+      - run: go vet ./internal/maxsearch ./cmd/aegis-max
+      - run: go build ./cmd/aegis-max
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - run: go build -o /tmp/aegis ./cmd/aegis
+      - run: go build -o /tmp/aegis-max ./cmd/aegis-max
+      - run: /tmp/aegis import-osm --input benchdata/hatfield-uk.osm --output /tmp/hatfield.aegis --profile car --metric distance
+      - run: /tmp/aegis-max --graph /tmp/hatfield.aegis --source 0 --target 10 --mode efficient --verify > /tmp/efficient.json
+      - run: /tmp/aegis-max --graph /tmp/hatfield.aegis --source 0 --target 10 --mode latency --parallel 3 --verify > /tmp/latency.json
+      - run: /tmp/aegis-max --graph /tmp/hatfield.aegis --source 0 --target 10 --mode latency --parallel 2 --verify --consensus > /tmp/consensus.json
+
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - run: go test -race ./internal/maxsearch ./internal/search ./internal/graph
