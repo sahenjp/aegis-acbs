@@ -1,6 +1,7 @@
 <div align="center">
 
-# Aegis ACBS
+<h1>aegis</h1>
+<p><strong>ACBS</strong></p>
 
 **Exact bidirectional shortest-path search with a shared proof of optimality.**
 
