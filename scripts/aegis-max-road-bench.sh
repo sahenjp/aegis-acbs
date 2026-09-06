@@ -101,8 +101,6 @@ PY
 "$BIN_DIR/aegis-routingkit-cch-export" --graph "$GRAPH" --output "$CCH_GRAPH"
 export LD_LIBRARY_PATH="$ROUTINGKIT_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-# First CH launch is deliberately cold. The sidecar creates a fingerprint-bound
-# local index. The second launch measures the warm load path on identical pairs.
 rm -f "$CH_GRAPH.ch-index" "$CH_GRAPH.ch-index.meta"
 "$BIN_DIR/aegis-max-batch" \
   --graph "$GRAPH" --queries "$QUERIES_FILE" \
@@ -141,7 +139,8 @@ rows = []
 graph_fingerprint = None
 for s in base['summary']:
     rows.append({'algorithm': s['algorithm'], 'meanNs': s['meanNs'], 'p50Ns': s['medianNs'],
-                 'p95Ns': s['p95Ns'], 'p99Ns': s['p99Ns'], 'preprocessNs': 0, 'updateNs': 0,
+                 'p95Ns': s['p95Ns'], 'p99Ns': s['p99Ns'], 'preprocessNs': 0,
+                 'warmPreprocessNs': 0, 'updateNs': 0,
                  'amortizedMeanNs': s['meanNs'], 'correct': s['correct'], 'runs': s['runs']})
 
 warm_ch = json.load(open(os.path.join(out, 'ch-warm.json'), encoding='utf-8'))
@@ -160,29 +159,26 @@ for alg, file, meta_key in [('routingkit-ch','ch.json','routingKitCH'),
         elif fp != graph_fingerprint:
             raise SystemExit(f'{alg} graph fingerprint disagrees with another preprocessed solver')
     prep = int(m['preprocessNs'])
+    warm_prep = 0
     if alg == 'routingkit-ch':
         if m.get('cacheHit') is not False:
             raise SystemExit('cold CH launch unexpectedly reported a cache hit')
         update = int(m.get('rebuildNs', prep))
         if update < 1 or int(m.get('cacheIndexBytes', 0)) < 1:
             raise SystemExit('CH rebuild/index evidence missing')
-        warm_startup = int(warm_meta['preprocessNs'])
-        if int(warm_meta.get('rebuildNs', 0)) != update:
-            raise SystemExit('warm CH launch lost the original rebuild cost')
+        warm_prep = int(warm_meta['preprocessNs'])
+        if warm_prep < 1 or int(warm_meta.get('rebuildNs', 0)) != update:
+            raise SystemExit('warm CH launch lost startup or original rebuild evidence')
     elif alg == 'routingkit-cch':
         update = int(m.get('customizeNs', prep))
-        warm_startup = None
     else:
         update = prep
-        warm_startup = None
     row = {'algorithm': alg, 'meanNs': s['meanNs'], 'p50Ns': s['p50Ns'], 'p95Ns': s['p95Ns'],
-           'p99Ns': s['p99Ns'], 'preprocessNs': prep, 'updateNs': update,
-           'amortizedMeanNs': s['meanNs'] + prep // max(q,1),
+           'p99Ns': s['p99Ns'], 'preprocessNs': prep, 'warmPreprocessNs': warm_prep,
+           'updateNs': update, 'amortizedMeanNs': s['meanNs'] + prep // max(q,1),
            'correct': s['queries'], 'runs': s['queries']}
     if alg == 'routingkit-ch':
-        row.update({'warmStartupNs': warm_startup,
-                    'cacheIndexBytes': int(m['cacheIndexBytes']),
-                    'rebuildNs': update})
+        row.update({'cacheIndexBytes': int(m['cacheIndexBytes']), 'rebuildNs': update})
     rows.append(row)
 
 if graph_fingerprint is None or len(graph_fingerprint) != 64:
@@ -202,13 +198,23 @@ with open(os.path.join(out, 'summary.json'), 'w', encoding='utf-8') as f:
 print(json.dumps(report, indent=2, sort_keys=True))
 PY
 
-for stat in mean p95 p99; do
-  "$BIN_DIR/aegis-max-select" \
-    --benchmark "$OUT_DIR/summary.json" --queries "$QUERIES" --metric-updates 0 \
-    --selection-stat "$stat" > "$OUT_DIR/selection-$stat-static.json"
-  "$BIN_DIR/aegis-max-select" \
-    --benchmark "$OUT_DIR/summary.json" --queries "$QUERIES" --metric-updates 4 \
-    --selection-stat "$stat" > "$OUT_DIR/selection-$stat-updates.json"
+for state in cold warm; do
+  for stat in mean p95 p99; do
+    "$BIN_DIR/aegis-max-select" \
+      --benchmark "$OUT_DIR/summary.json" --queries "$QUERIES" --metric-updates 0 \
+      --selection-stat "$stat" --preprocess-state "$state" \
+      > "$OUT_DIR/selection-$stat-$state-static.json"
+    "$BIN_DIR/aegis-max-select" \
+      --benchmark "$OUT_DIR/summary.json" --queries "$QUERIES" --metric-updates 4 \
+      --selection-stat "$stat" --preprocess-state "$state" \
+      > "$OUT_DIR/selection-$stat-$state-updates.json"
+  done
 done
-cp "$OUT_DIR/selection-mean-static.json" "$OUT_DIR/selection-static.json"
-cp "$OUT_DIR/selection-mean-updates.json" "$OUT_DIR/selection-updates.json"
+
+# Compatibility aliases remain conservative cold-start decisions.
+for stat in mean p95 p99; do
+  cp "$OUT_DIR/selection-$stat-cold-static.json" "$OUT_DIR/selection-$stat-static.json"
+  cp "$OUT_DIR/selection-$stat-cold-updates.json" "$OUT_DIR/selection-$stat-updates.json"
+done
+cp "$OUT_DIR/selection-mean-cold-static.json" "$OUT_DIR/selection-static.json"
+cp "$OUT_DIR/selection-mean-cold-updates.json" "$OUT_DIR/selection-updates.json"
