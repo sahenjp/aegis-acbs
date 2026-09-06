@@ -5,6 +5,11 @@ on:
     branches: [research/aegis-max-exact]
     paths:
       - '.github/workflows/aegis-max-tokyo-bench.yml'
+      - 'scripts/aegis-max-road-bench.sh'
+      - 'cmd/aegis-max-batch/**'
+      - 'cmd/aegis-max-select/**'
+      - 'internal/maxsearch/**'
+      - 'experimental/routingkit/ch_server.cpp'
   workflow_dispatch:
 
 permissions:
@@ -17,7 +22,7 @@ concurrency:
 jobs:
   tokyo:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,28 +44,59 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/aegis-max-road-bench.sh tokyo 300 time 16 "$RUNNER_TEMP/tokyo-bench"
-      - name: Assert and summarize
+      - name: Assert cold/warm evidence and summarize
         shell: bash
         run: |
           set -euo pipefail
-          python3 - "$RUNNER_TEMP/tokyo-bench/summary.json" "$RUNNER_TEMP/tokyo-bench/selection-static.json" "$RUNNER_TEMP/tokyo-bench/selection-updates.json" "$GITHUB_STEP_SUMMARY" <<'PY'
+          OUT="$RUNNER_TEMP/tokyo-bench"
+          python3 - \
+            "$OUT/summary.json" \
+            "$OUT/selection-mean-cold-static.json" "$OUT/selection-mean-warm-static.json" \
+            "$OUT/selection-mean-cold-updates.json" "$OUT/selection-mean-warm-updates.json" \
+            "$OUT/selection-p95-cold-static.json" "$OUT/selection-p95-warm-static.json" \
+            "$OUT/selection-p99-cold-static.json" "$OUT/selection-p99-warm-static.json" \
+            "$GITHUB_STEP_SUMMARY" <<'PY'
           import json, sys
-          src, static_p, updates_p, dst = sys.argv[1:]
+          (src, mean_cold_p, mean_warm_p, mean_cold_u_p, mean_warm_u_p,
+           p95_cold_p, p95_warm_p, p99_cold_p, p99_warm_p, dst) = sys.argv[1:]
           d = json.load(open(src, encoding='utf-8'))
-          static = json.load(open(static_p, encoding='utf-8'))
-          updates = json.load(open(updates_p, encoding='utf-8'))
+          decisions = {
+              'mean/cold/static': json.load(open(mean_cold_p, encoding='utf-8')),
+              'mean/warm/static': json.load(open(mean_warm_p, encoding='utf-8')),
+              'mean/cold/4-updates': json.load(open(mean_cold_u_p, encoding='utf-8')),
+              'mean/warm/4-updates': json.load(open(mean_warm_u_p, encoding='utf-8')),
+              'p95/cold/static': json.load(open(p95_cold_p, encoding='utf-8')),
+              'p95/warm/static': json.load(open(p95_warm_p, encoding='utf-8')),
+              'p99/cold/static': json.load(open(p99_cold_p, encoding='utf-8')),
+              'p99/warm/static': json.load(open(p99_warm_p, encoding='utf-8')),
+          }
           assert d['allCorrect'] is True
           assert d['queries'] == 300
           assert len(d['graphFingerprint']) == 64
+          ch = next(r for r in d['rankingByQueryMean'] if r['algorithm'] == 'routingkit-ch')
+          assert ch['preprocessNs'] > 0
+          assert ch['warmPreprocessNs'] > 0
+          assert ch['warmPreprocessNs'] < ch['preprocessNs']
+          assert ch['rebuildNs'] == ch['updateNs'] == ch['preprocessNs']
+          assert ch['cacheIndexBytes'] > 0
+          for name, decision in decisions.items():
+              expected_state = 'warm' if '/warm/' in name else 'cold'
+              expected_stat = name.split('/')[0]
+              assert decision['horizon']['preprocessState'] == expected_state
+              assert decision['statistic'] == expected_stat
+          ms = lambda n: f"{n/1e6:.6f} ms"
+          speedup = ch['preprocessNs'] / ch['warmPreprocessNs']
           with open(dst, 'a', encoding='utf-8') as out:
               out.write('## Tokyo / time — 300 identical exact queries\n\n')
               out.write(f"{d['nodes']:,} nodes · {d['edges']:,} edges · all correct: **true**\n\n")
-              out.write(f"adaptive selection: static **{static['selected']}** · 4 metric updates **{updates['selected']}**\n\n")
-              out.write('| algorithm | mean | p50 | p95 | p99 | preprocess | update | amortized mean |\n|---|---:|---:|---:|---:|---:|---:|---:|\n')
+              out.write(f"CH startup: cold **{ms(ch['preprocessNs'])}** → warm **{ms(ch['warmPreprocessNs'])}** (**{speedup:.1f}x**) · index **{ch['cacheIndexBytes']/1048576:.2f} MiB**\n\n")
+              out.write('| objective/state | selected |\n|---|---|\n')
+              for name, decision in decisions.items():
+                  out.write(f"| {name} | {decision['selected']} |\n")
+              out.write('\n| algorithm | mean | p50 | p95 | p99 | cold preprocess | warm preprocess | update |\n|---|---:|---:|---:|---:|---:|---:|---:|\n')
               for r in d['rankingByQueryMean']:
-                  ms = lambda n: f"{n/1e6:.6f} ms"
-                  out.write(f"| {r['algorithm']} | {ms(r['meanNs'])} | {ms(r['p50Ns'])} | {ms(r['p95Ns'])} | {ms(r['p99Ns'])} | {ms(r['preprocessNs'])} | {ms(r['updateNs'])} | {ms(r['amortizedMeanNs'])} |\n")
-          print(json.dumps({'benchmark': d, 'staticSelection': static, 'updatedSelection': updates}, indent=2, sort_keys=True))
+                  out.write(f"| {r['algorithm']} | {ms(r['meanNs'])} | {ms(r['p50Ns'])} | {ms(r['p95Ns'])} | {ms(r['p99Ns'])} | {ms(r['preprocessNs'])} | {ms(r.get('warmPreprocessNs',0))} | {ms(r['updateNs'])} |\n")
+          print(json.dumps({'benchmark': d, 'decisions': decisions}, indent=2, sort_keys=True))
           PY
       - name: Upload compact benchmark evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -68,9 +104,9 @@ jobs:
           name: aegis-max-tokyo-time-300-alt16
           path: |
             ${{ runner.temp }}/tokyo-bench/summary.json
-            ${{ runner.temp }}/tokyo-bench/selection-static.json
-            ${{ runner.temp }}/tokyo-bench/selection-updates.json
+            ${{ runner.temp }}/tokyo-bench/selection-*.json
             ${{ runner.temp }}/tokyo-bench/ch.json
+            ${{ runner.temp }}/tokyo-bench/ch-warm.json
             ${{ runner.temp }}/tokyo-bench/cch.json
             ${{ runner.temp }}/tokyo-bench/alt.json
             ${{ runner.temp }}/tokyo-bench/ch-consensus.json
