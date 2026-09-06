@@ -7,6 +7,7 @@ on:
       - 'scripts/aegis-max-road-bench.sh'
       - '.github/workflows/aegis-max-road-smoke.yml'
       - 'cmd/aegis-max-batch/**'
+      - 'cmd/aegis-max-select/**'
       - 'cmd/aegis-routingkit-export/**'
       - 'cmd/aegis-routingkit-cch-export/**'
       - 'internal/maxsearch/**'
@@ -15,6 +16,9 @@ on:
     paths:
       - 'scripts/aegis-max-road-bench.sh'
       - '.github/workflows/aegis-max-road-smoke.yml'
+      - 'cmd/aegis-max-batch/**'
+      - 'cmd/aegis-max-select/**'
+      - 'internal/maxsearch/**'
 
 permissions:
   contents: read
@@ -62,17 +66,25 @@ jobs:
             --alt-landmarks 8 --auto-select-benchmark "$OUT/summary.json"
             --verify --summary-only --timeout 20m
           )
-          "$BIN/aegis-max-batch" "${common[@]}" --metric-updates 0 > "$OUT/auto-static.json"
-          "$BIN/aegis-max-batch" "${common[@]}" --metric-updates 4 > "$OUT/auto-updates.json"
-          python3 - "$OUT/auto-static.json" "$OUT/auto-updates.json" <<'PY'
+          "$BIN/aegis-max-batch" "${common[@]}" --metric-updates 0 --selection-stat mean > "$OUT/auto-mean-static.json"
+          "$BIN/aegis-max-batch" "${common[@]}" --metric-updates 4 --selection-stat mean > "$OUT/auto-mean-updates.json"
+          "$BIN/aegis-max-batch" "${common[@]}" --metric-updates 0 --selection-stat p95 > "$OUT/auto-p95-static.json"
+          "$BIN/aegis-max-batch" "${common[@]}" --metric-updates 0 --selection-stat p99 > "$OUT/auto-p99-static.json"
+          cp "$OUT/auto-mean-static.json" "$OUT/auto-static.json"
+          cp "$OUT/auto-mean-updates.json" "$OUT/auto-updates.json"
+          python3 - \
+            "$OUT/auto-mean-static.json" "$OUT/auto-mean-updates.json" \
+            "$OUT/auto-p95-static.json" "$OUT/auto-p99-static.json" <<'PY'
           import json, sys
-          for path in sys.argv[1:]:
+          expected_stats = ['mean', 'mean', 'p95', 'p99']
+          for path, expected_stat in zip(sys.argv[1:], expected_stats):
               d = json.load(open(path, encoding='utf-8'))
               selected = d['selection']['selected']
+              assert d['selection']['statistic'] == expected_stat
               assert d['report']['summary']['primary'] == selected
               assert d['report']['summary']['queries'] == 120
               assert d['report']['summary']['primaryWins'] == 120
-              print(path, 'selected', selected)
+              print(path, expected_stat, 'selected', selected)
           PY
       - name: Reject mismatched benchmark identity
         shell: bash
@@ -100,24 +112,40 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - "$RUNNER_TEMP/road-smoke/summary.json" "$RUNNER_TEMP/road-smoke/auto-static.json" "$RUNNER_TEMP/road-smoke/auto-updates.json" "$GITHUB_STEP_SUMMARY" <<'PY'
+          python3 - \
+            "$RUNNER_TEMP/road-smoke/summary.json" \
+            "$RUNNER_TEMP/road-smoke/auto-mean-static.json" \
+            "$RUNNER_TEMP/road-smoke/auto-mean-updates.json" \
+            "$RUNNER_TEMP/road-smoke/auto-p95-static.json" \
+            "$RUNNER_TEMP/road-smoke/auto-p99-static.json" \
+            "$GITHUB_STEP_SUMMARY" <<'PY'
           import json, sys
-          src, static_p, updates_p, summary = sys.argv[1:]
+          src, mean_static_p, mean_updates_p, p95_p, p99_p, summary = sys.argv[1:]
           d = json.load(open(src, encoding='utf-8'))
-          static = json.load(open(static_p, encoding='utf-8'))
-          updates = json.load(open(updates_p, encoding='utf-8'))
+          mean_static = json.load(open(mean_static_p, encoding='utf-8'))
+          mean_updates = json.load(open(mean_updates_p, encoding='utf-8'))
+          p95 = json.load(open(p95_p, encoding='utf-8'))
+          p99 = json.load(open(p99_p, encoding='utf-8'))
           assert d['allCorrect'] is True
           assert d['queries'] == 120
           assert len(d['graphFingerprint']) == 64
+          for stat, path in [('mean', mean_static), ('p95', p95), ('p99', p99)]:
+              assert path['selection']['statistic'] == stat
           names = {r['algorithm'] for r in d['rankingByQueryMean']}
           required = {'dijkstra','bidijkstra','astar','aegis','routingkit-ch','routingkit-cch','alt'}
           assert required <= names, (required - names)
           with open(summary, 'a', encoding='utf-8') as out:
               out.write(f"## Aegis Max Andorra smoke\n\n{d['nodes']:,} nodes · {d['edges']:,} edges · {d['queries']} identical queries · all correct: **true**\n\n")
-              out.write(f"adaptive: static **{static['selection']['selected']}** · 4 metric updates **{updates['selection']['selected']}**\n\n")
-              out.write('| algorithm | mean | p50 | p95 | preprocess | update | amortized mean |\n|---|---:|---:|---:|---:|---:|---:|\n')
+              out.write(
+                  'adaptive: '
+                  f"mean/static **{mean_static['selection']['selected']}** · "
+                  f"mean/4 updates **{mean_updates['selection']['selected']}** · "
+                  f"p95/static **{p95['selection']['selected']}** · "
+                  f"p99/static **{p99['selection']['selected']}**\n\n"
+              )
+              out.write('| algorithm | mean | p50 | p95 | p99 | preprocess | update | amortized mean |\n|---|---:|---:|---:|---:|---:|---:|---:|\n')
               for r in d['rankingByQueryMean']:
                   ms = lambda n: f"{n/1e6:.6f} ms"
-                  out.write(f"| {r['algorithm']} | {ms(r['meanNs'])} | {ms(r['p50Ns'])} | {ms(r['p95Ns'])} | {ms(r['preprocessNs'])} | {ms(r['updateNs'])} | {ms(r['amortizedMeanNs'])} |\n")
+                  out.write(f"| {r['algorithm']} | {ms(r['meanNs'])} | {ms(r['p50Ns'])} | {ms(r['p95Ns'])} | {ms(r['p99Ns'])} | {ms(r['preprocessNs'])} | {ms(r['updateNs'])} | {ms(r['amortizedMeanNs'])} |\n")
           print(json.dumps(d, indent=2, sort_keys=True))
           PY
