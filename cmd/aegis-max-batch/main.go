@@ -46,6 +46,8 @@ type benchmarkSummary struct {
 type benchmarkRow struct {
 	Algorithm    search.Algorithm `json:"algorithm"`
 	MeanNS       int64            `json:"meanNs"`
+	P95NS        int64            `json:"p95Ns"`
+	P99NS        int64            `json:"p99Ns"`
 	PreprocessNS int64            `json:"preprocessNs"`
 	UpdateNS     int64            `json:"updateNs"`
 }
@@ -69,6 +71,7 @@ func main() {
 	algorithmsText := flag.String("algorithms", "", "comma-separated exact runner order; defaults to configured CH, CCH, ALT, bidijkstra, dijkstra")
 	autoSelectBenchmark := flag.String("auto-select-benchmark", "", "summary.json from aegis-max-road-bench.sh; selects one available exact runner for this exact graph")
 	metricUpdates := flag.Int64("metric-updates", 0, "expected metric/edge-weight updates over this batch horizon for adaptive selection")
+	selectionStat := flag.String("selection-stat", "mean", "per-query statistic used by adaptive selection: mean, p95, or p99")
 	consensus := flag.Bool("consensus", false, "require two successful exact runners to agree for every query")
 	verify := flag.Bool("verify", true, "validate every successful path")
 	summaryOnly := flag.Bool("summary-only", false, "omit per-query samples from JSON output")
@@ -110,7 +113,16 @@ func main() {
 		if len(algorithms) != 0 {
 			fatal(errors.New("--auto-select-benchmark and --algorithms are mutually exclusive"))
 		}
-		sel, err := selectFromBenchmark(*autoSelectBenchmark, g, int64(len(queries)), *metricUpdates, configuredCH, configuredCCH, configuredALT)
+		sel, err := selectFromBenchmark(
+			*autoSelectBenchmark,
+			g,
+			int64(len(queries)),
+			*metricUpdates,
+			maxsearch.SelectionStatistic(*selectionStat),
+			configuredCH,
+			configuredCCH,
+			configuredALT,
+		)
 		if err != nil {
 			fatal(err)
 		}
@@ -257,7 +269,7 @@ func main() {
 	}
 }
 
-func selectFromBenchmark(path string, g *graph.Graph, queries, updates int64, configuredCH, configuredCCH, configuredALT bool) (maxsearch.SolverSelection, error) {
+func selectFromBenchmark(path string, g *graph.Graph, queries, updates int64, statistic maxsearch.SelectionStatistic, configuredCH, configuredCCH, configuredALT bool) (maxsearch.SolverSelection, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return maxsearch.SolverSelection{}, err
@@ -288,11 +300,16 @@ func selectFromBenchmark(path string, g *graph.Graph, queries, updates int64, co
 			continue
 		}
 		profiles = append(profiles, maxsearch.SolverProfile{
-			Algorithm: row.Algorithm, QueryNS: row.MeanNS,
+			Algorithm: row.Algorithm,
+			QueryNS: row.MeanNS, QueryP95NS: row.P95NS, QueryP99NS: row.P99NS,
 			PreprocessNS: row.PreprocessNS, UpdateNS: row.UpdateNS,
 		})
 	}
-	return maxsearch.SelectSolver(profiles, maxsearch.WorkloadHorizon{Queries: queries, MetricUpdates: updates})
+	return maxsearch.SelectSolverByStatistic(
+		profiles,
+		maxsearch.WorkloadHorizon{Queries: queries, MetricUpdates: updates},
+		statistic,
+	)
 }
 
 func readQueries(path string) ([]maxsearch.BatchQuery, error) {
