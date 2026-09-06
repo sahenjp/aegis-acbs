@@ -128,10 +128,19 @@ func (r *RoutingKitCCHRunner) Run(ctx context.Context, g *graph.Graph, source, t
 		return search.Result{}, errors.New("maxsearch: RoutingKit CCH runner is closed")
 	}
 
+	// runPlan cancels its per-query context after a successful result. That
+	// cancellation must not kill the persistent sidecar after the query already
+	// completed. Only terminate the process when cancellation wins while the
+	// blocking query is genuinely still outstanding.
 	queryDone := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
+			select {
+			case <-queryDone:
+				return
+			default:
+			}
 			if r.cmd.Process != nil {
 				_ = r.cmd.Process.Kill()
 			}
