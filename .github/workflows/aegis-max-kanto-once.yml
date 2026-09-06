@@ -1,0 +1,84 @@
+name: Aegis Max Kanto Once
+
+on:
+  push:
+    branches: [research/aegis-max-exact]
+    paths:
+      - '.github/workflows/aegis-max-kanto-once.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aegis-max-kanto-once-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  kanto:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Install native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ zlib1g-dev osmium-tool curl
+      - name: Run Kanto identical-query exact benchmark
+        shell: bash
+        env:
+          AEGIS_BENCH_MAKE_JOBS: '2'
+        run: |
+          set -euo pipefail
+          bash scripts/aegis-max-road-bench.sh kanto 300 time 4 "$RUNNER_TEMP/kanto-bench"
+      - name: Assert and summarize
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/kanto-bench"
+          python3 - "$OUT/summary.json" "$OUT/selection-static.json" "$OUT/selection-updates.json" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          src, static_p, updates_p, dst = sys.argv[1:]
+          d = json.load(open(src, encoding='utf-8'))
+          static = json.load(open(static_p, encoding='utf-8'))
+          updates = json.load(open(updates_p, encoding='utf-8'))
+          assert d['allCorrect'] is True
+          assert d['queries'] == 300
+          assert len(d['graphFingerprint']) == 64
+          required = {'dijkstra','bidijkstra','astar','aegis','routingkit-ch','routingkit-cch','alt'}
+          assert required <= {r['algorithm'] for r in d['rankingByQueryMean']}
+          with open(dst, 'a', encoding='utf-8') as out:
+              out.write('## Kanto / time — 300 identical exact queries\n\n')
+              out.write(f"{d['nodes']:,} nodes · {d['edges']:,} edges · all correct: **true**\n\n")
+              out.write(f"adaptive selection: static **{static['selected']}** · 4 metric updates **{updates['selected']}**\n\n")
+              out.write('| algorithm | mean | p50 | p95 | p99 | preprocess | update | amortized mean |\n|---|---:|---:|---:|---:|---:|---:|---:|\n')
+              for r in d['rankingByQueryMean']:
+                  ms = lambda n: f"{n/1e6:.6f} ms"
+                  out.write(f"| {r['algorithm']} | {ms(r['meanNs'])} | {ms(r['p50Ns'])} | {ms(r['p95Ns'])} | {ms(r['p99Ns'])} | {ms(r['preprocessNs'])} | {ms(r['updateNs'])} | {ms(r['amortizedMeanNs'])} |\n")
+          print(json.dumps({'benchmark': d, 'staticSelection': static, 'updatedSelection': updates}, indent=2, sort_keys=True))
+          PY
+      - name: Upload compact benchmark evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: aegis-max-kanto-time-300-alt4
+          path: |
+            ${{ runner.temp }}/kanto-bench/summary.json
+            ${{ runner.temp }}/kanto-bench/selection-static.json
+            ${{ runner.temp }}/kanto-bench/selection-updates.json
+            ${{ runner.temp }}/kanto-bench/ch.json
+            ${{ runner.temp }}/kanto-bench/cch.json
+            ${{ runner.temp }}/kanto-bench/alt.json
+            ${{ runner.temp }}/kanto-bench/ch-consensus.json
+            ${{ runner.temp }}/kanto-bench/cch-consensus.json
+            ${{ runner.temp }}/kanto-bench/alt-consensus.json
+            ${{ runner.temp }}/kanto-bench/queries.txt
+            ${{ runner.temp }}/kanto-bench/verify-queries.txt
+          if-no-files-found: error
+          retention-days: 30
