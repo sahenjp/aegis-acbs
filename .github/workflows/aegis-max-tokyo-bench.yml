@@ -43,20 +43,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - "$RUNNER_TEMP/tokyo-bench/summary.json" "$GITHUB_STEP_SUMMARY" <<'PY'
+          python3 - "$RUNNER_TEMP/tokyo-bench/summary.json" "$RUNNER_TEMP/tokyo-bench/selection-static.json" "$RUNNER_TEMP/tokyo-bench/selection-updates.json" "$GITHUB_STEP_SUMMARY" <<'PY'
           import json, sys
-          src, dst = sys.argv[1:]
+          src, static_p, updates_p, dst = sys.argv[1:]
           d = json.load(open(src, encoding='utf-8'))
+          static = json.load(open(static_p, encoding='utf-8'))
+          updates = json.load(open(updates_p, encoding='utf-8'))
           assert d['allCorrect'] is True
           assert d['queries'] == 300
           with open(dst, 'a', encoding='utf-8') as out:
-              out.write(f"## Tokyo / time — 300 identical exact queries\n\n")
+              out.write('## Tokyo / time — 300 identical exact queries\n\n')
               out.write(f"{d['nodes']:,} nodes · {d['edges']:,} edges · all correct: **true**\n\n")
-              out.write('| algorithm | mean | p50 | p95 | p99 | preprocess | amortized mean |\n|---|---:|---:|---:|---:|---:|---:|\n')
+              out.write(f"adaptive selection: static **{static['selected']}** · 4 metric updates **{updates['selected']}**\n\n")
+              out.write('| algorithm | mean | p50 | p95 | p99 | preprocess | update | amortized mean |\n|---|---:|---:|---:|---:|---:|---:|---:|\n')
               for r in d['rankingByQueryMean']:
                   ms = lambda n: f"{n/1e6:.6f} ms"
-                  out.write(f"| {r['algorithm']} | {ms(r['meanNs'])} | {ms(r['p50Ns'])} | {ms(r['p95Ns'])} | {ms(r['p99Ns'])} | {ms(r['preprocessNs'])} | {ms(r['amortizedMeanNs'])} |\n")
-          print(json.dumps(d, indent=2, sort_keys=True))
+                  out.write(f"| {r['algorithm']} | {ms(r['meanNs'])} | {ms(r['p50Ns'])} | {ms(r['p95Ns'])} | {ms(r['p99Ns'])} | {ms(r['preprocessNs'])} | {ms(r['updateNs'])} | {ms(r['amortizedMeanNs'])} |\n")
+          print(json.dumps({'benchmark': d, 'staticSelection': static, 'updatedSelection': updates}, indent=2, sort_keys=True))
           PY
       - name: Upload benchmark evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
