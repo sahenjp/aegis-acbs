@@ -39,6 +39,7 @@ type altMetadata struct {
 }
 
 type benchmarkSummary struct {
+	GraphFingerprint   string         `json:"graphFingerprint"`
 	RankingByQueryMean []benchmarkRow `json:"rankingByQueryMean"`
 }
 
@@ -66,7 +67,7 @@ func main() {
 	routingKitCCHGraph := flag.String("routingkit-cch-graph", "", "graph produced by aegis-routingkit-cch-export")
 	altLandmarks := flag.Int("alt-landmarks", 0, "build and reuse an exact directed ALT runner with this many landmarks (1-32; 0 disables ALT)")
 	algorithmsText := flag.String("algorithms", "", "comma-separated exact runner order; defaults to configured CH, CCH, ALT, bidijkstra, dijkstra")
-	autoSelectBenchmark := flag.String("auto-select-benchmark", "", "summary.json from aegis-max-road-bench.sh; selects one available exact runner for this batch")
+	autoSelectBenchmark := flag.String("auto-select-benchmark", "", "summary.json from aegis-max-road-bench.sh; selects one available exact runner for this exact graph")
 	metricUpdates := flag.Int64("metric-updates", 0, "expected metric/edge-weight updates over this batch horizon for adaptive selection")
 	consensus := flag.Bool("consensus", false, "require two successful exact runners to agree for every query")
 	verify := flag.Bool("verify", true, "validate every successful path")
@@ -109,7 +110,7 @@ func main() {
 		if len(algorithms) != 0 {
 			fatal(errors.New("--auto-select-benchmark and --algorithms are mutually exclusive"))
 		}
-		sel, err := selectFromBenchmark(*autoSelectBenchmark, int64(len(queries)), *metricUpdates, configuredCH, configuredCCH, configuredALT)
+		sel, err := selectFromBenchmark(*autoSelectBenchmark, g, int64(len(queries)), *metricUpdates, configuredCH, configuredCCH, configuredALT)
 		if err != nil {
 			fatal(err)
 		}
@@ -202,9 +203,6 @@ func main() {
 		fatal(errors.New("consensus requires at least two runners"))
 	}
 
-	// Efficient mode is deliberate: every stateful preprocessed runner is
-	// allowed to finish before another candidate starts, so its index/tables can
-	// be reused safely across the complete batch.
 	cfg := maxsearch.Config{
 		Mode:        maxsearch.ModeEfficient,
 		MaxParallel: 1,
@@ -259,7 +257,7 @@ func main() {
 	}
 }
 
-func selectFromBenchmark(path string, queries, updates int64, configuredCH, configuredCCH, configuredALT bool) (maxsearch.SolverSelection, error) {
+func selectFromBenchmark(path string, g *graph.Graph, queries, updates int64, configuredCH, configuredCCH, configuredALT bool) (maxsearch.SolverSelection, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return maxsearch.SolverSelection{}, err
@@ -267,6 +265,13 @@ func selectFromBenchmark(path string, queries, updates int64, configuredCH, conf
 	var summary benchmarkSummary
 	if err := json.Unmarshal(data, &summary); err != nil {
 		return maxsearch.SolverSelection{}, err
+	}
+	if strings.TrimSpace(summary.GraphFingerprint) == "" {
+		return maxsearch.SolverSelection{}, errors.New("benchmark is not bound to a graph fingerprint; regenerate it with aegis-max-road-bench.sh")
+	}
+	expectedFingerprint := maxsearch.RoutingKitGraphFingerprint(g)
+	if summary.GraphFingerprint != expectedFingerprint {
+		return maxsearch.SolverSelection{}, fmt.Errorf("benchmark graph fingerprint mismatch: benchmark=%s aegis=%s", summary.GraphFingerprint, expectedFingerprint)
 	}
 	profiles := make([]maxsearch.SolverProfile, 0, len(summary.RankingByQueryMean))
 	for _, row := range summary.RankingByQueryMean {
