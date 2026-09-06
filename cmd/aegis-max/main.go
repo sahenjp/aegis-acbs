@@ -16,8 +16,11 @@ import (
 )
 
 type routingKitCHMetadata struct {
-	PreprocessNS int64  `json:"preprocessNs"`
-	Fingerprint  string `json:"fingerprint"`
+	PreprocessNS    int64  `json:"preprocessNs"`
+	RebuildNS       int64  `json:"rebuildNs"`
+	CacheHit        bool   `json:"cacheHit"`
+	CacheIndexBytes int64  `json:"cacheIndexBytes"`
+	Fingerprint     string `json:"fingerprint"`
 }
 
 type routingKitCCHMetadata struct {
@@ -163,8 +166,11 @@ func main() {
 	wrapped := outcomeWithPreprocessing{Outcome: out}
 	if ch != nil {
 		wrapped.RoutingKitCH = &routingKitCHMetadata{
-			PreprocessNS: ch.PreprocessDuration().Nanoseconds(),
-			Fingerprint:  ch.Fingerprint(),
+			PreprocessNS:    ch.PreprocessDuration().Nanoseconds(),
+			RebuildNS:       ch.RebuildDuration().Nanoseconds(),
+			CacheHit:        ch.CacheHit(),
+			CacheIndexBytes: ch.CacheIndexBytes(),
+			Fingerprint:     ch.Fingerprint(),
 		}
 	}
 	if cch != nil {
@@ -197,9 +203,6 @@ func runnersWithPreprocessing(g *graph.Graph, source, target int, cfg maxsearch.
 		if err != nil {
 			return nil, err
 		}
-		// Static-road evidence currently favors CH. CCH follows because its
-		// customization phase is valuable for future reweighting, then ALT gives
-		// a native uint64 preprocessed fallback before the ordinary exact runners.
 		if ch != nil {
 			algorithms = append(algorithms, maxsearch.RoutingKitCH)
 		}
@@ -246,8 +249,6 @@ func runnersWithPreprocessing(g *graph.Graph, source, target int, cfg maxsearch.
 
 func buildPlan(g *graph.Graph, source, target int, cfg maxsearch.Config, useCH, useCCH, useALT bool) (maxsearch.Plan, error) {
 	if len(cfg.Algorithms) > 0 {
-		// Explicit experiments must be reproducible: never inject or reorder
-		// configured preprocessing runners when --algorithms was supplied.
 		return maxsearch.BuildPlan(g, source, target, cfg)
 	}
 	base, err := maxsearch.BuildPlan(g, source, target, cfg)
