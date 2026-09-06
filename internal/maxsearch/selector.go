@@ -10,29 +10,39 @@ import (
 
 type SelectionStatistic string
 
+type PreprocessState string
+
 const (
 	SelectionMean SelectionStatistic = "mean"
 	SelectionP95  SelectionStatistic = "p95"
 	SelectionP99  SelectionStatistic = "p99"
+
+	PreprocessCold PreprocessState = "cold"
+	PreprocessWarm PreprocessState = "warm"
 )
 
 // SolverProfile is measured evidence for one exact solver. UpdateNS is the
 // cost of making the solver usable after one metric/weight update. For static
 // preprocessing such as CH this is normally a full rebuild; for CCH it can be
-// only the customization phase.
+// only the customization phase. WarmPreprocessNS is optional evidence for a
+// trusted persisted index; if it is unavailable, warm selection falls back to
+// the cold preprocessing cost instead of assuming a free startup.
 type SolverProfile struct {
-	Algorithm    search.Algorithm `json:"algorithm"`
-	QueryNS      int64            `json:"queryNs"`
-	QueryP95NS   int64            `json:"queryP95Ns,omitempty"`
-	QueryP99NS   int64            `json:"queryP99Ns,omitempty"`
-	PreprocessNS int64            `json:"preprocessNs"`
-	UpdateNS     int64            `json:"updateNs"`
+	Algorithm        search.Algorithm `json:"algorithm"`
+	QueryNS          int64            `json:"queryNs"`
+	QueryP95NS       int64            `json:"queryP95Ns,omitempty"`
+	QueryP99NS       int64            `json:"queryP99Ns,omitempty"`
+	PreprocessNS     int64            `json:"preprocessNs"`
+	WarmPreprocessNS int64            `json:"warmPreprocessNs,omitempty"`
+	UpdateNS         int64            `json:"updateNs"`
 }
 
 // WorkloadHorizon describes the expected useful lifetime of preprocessing.
+// An empty PreprocessState is normalized to cold for backwards compatibility.
 type WorkloadHorizon struct {
-	Queries       int64 `json:"queries"`
-	MetricUpdates int64 `json:"metricUpdates"`
+	Queries         int64           `json:"queries"`
+	MetricUpdates   int64           `json:"metricUpdates"`
+	PreprocessState PreprocessState `json:"preprocessState"`
 }
 
 type SolverEstimate struct {
@@ -41,34 +51,34 @@ type SolverEstimate struct {
 	EstimatedMeanNS  int64            `json:"estimatedMeanNs"`
 	QueryNS          int64            `json:"queryNs"`
 	PreprocessNS     int64            `json:"preprocessNs"`
+	ColdPreprocessNS int64            `json:"coldPreprocessNs"`
+	WarmPreprocessNS int64            `json:"warmPreprocessNs,omitempty"`
 	UpdateNS         int64            `json:"updateNs"`
 }
 
 type SolverSelection struct {
-	Selected  search.Algorithm    `json:"selected"`
-	Statistic SelectionStatistic  `json:"statistic"`
-	Horizon   WorkloadHorizon     `json:"horizon"`
-	Ranking   []SolverEstimate    `json:"ranking"`
+	Selected  search.Algorithm   `json:"selected"`
+	Statistic SelectionStatistic `json:"statistic"`
+	Horizon   WorkloadHorizon    `json:"horizon"`
+	Ranking   []SolverEstimate   `json:"ranking"`
 }
 
-// SelectSolver minimizes measured end-to-end mean cost over the supplied
-// horizon. It is kept as the throughput-oriented default for callers that do
-// not need an explicit tail-latency objective.
 func SelectSolver(profiles []SolverProfile, horizon WorkloadHorizon) (SolverSelection, error) {
 	return SelectSolverByStatistic(profiles, horizon, SelectionMean)
 }
 
-// SelectSolverByStatistic minimizes measured end-to-end cost over the supplied
-// horizon using mean, p95, or p99 query time as the per-query cost. It has no
-// region-specific thresholds: graph size/topology/hardware are represented by
-// the measured profile, while query volume and update frequency control
-// preprocessing amortization.
 func SelectSolverByStatistic(profiles []SolverProfile, horizon WorkloadHorizon, statistic SelectionStatistic) (SolverSelection, error) {
 	if horizon.Queries <= 0 {
 		return SolverSelection{}, errors.New("maxsearch: selector requires at least one query")
 	}
 	if horizon.MetricUpdates < 0 {
 		return SolverSelection{}, errors.New("maxsearch: metric updates cannot be negative")
+	}
+	if horizon.PreprocessState == "" {
+		horizon.PreprocessState = PreprocessCold
+	}
+	if horizon.PreprocessState != PreprocessCold && horizon.PreprocessState != PreprocessWarm {
+		return SolverSelection{}, errors.New("maxsearch: preprocess state must be cold or warm")
 	}
 	if len(profiles) == 0 {
 		return SolverSelection{}, errors.New("maxsearch: selector has no solver profiles")
@@ -80,7 +90,7 @@ func SelectSolverByStatistic(profiles []SolverProfile, horizon WorkloadHorizon, 
 	ranking := make([]SolverEstimate, 0, len(profiles))
 	seen := make(map[search.Algorithm]struct{}, len(profiles))
 	for _, p := range profiles {
-		if p.Algorithm == "" || p.QueryNS < 0 || p.QueryP95NS < 0 || p.QueryP99NS < 0 || p.PreprocessNS < 0 || p.UpdateNS < 0 {
+		if p.Algorithm == "" || p.QueryNS < 0 || p.QueryP95NS < 0 || p.QueryP99NS < 0 || p.PreprocessNS < 0 || p.WarmPreprocessNS < 0 || p.UpdateNS < 0 {
 			return SolverSelection{}, errors.New("maxsearch: invalid solver profile")
 		}
 		if _, ok := seen[p.Algorithm]; ok {
@@ -92,7 +102,8 @@ func SelectSolverByStatistic(profiles []SolverProfile, horizon WorkloadHorizon, 
 		if err != nil {
 			return SolverSelection{}, err
 		}
-		total, ok := checkedCost(queryNS, p.PreprocessNS, p.UpdateNS, horizon)
+		preprocessNS := profilePreprocessCost(p, horizon.PreprocessState)
+		total, ok := checkedCost(queryNS, preprocessNS, p.UpdateNS, horizon)
 		if !ok {
 			return SolverSelection{}, errors.New("maxsearch: selector cost overflow")
 		}
@@ -101,7 +112,9 @@ func SelectSolverByStatistic(profiles []SolverProfile, horizon WorkloadHorizon, 
 			EstimatedTotalNS: total,
 			EstimatedMeanNS:  total / horizon.Queries,
 			QueryNS:          queryNS,
-			PreprocessNS:     p.PreprocessNS,
+			PreprocessNS:     preprocessNS,
+			ColdPreprocessNS: p.PreprocessNS,
+			WarmPreprocessNS: p.WarmPreprocessNS,
 			UpdateNS:         p.UpdateNS,
 		})
 	}
@@ -135,6 +148,13 @@ func profileQueryCost(p SolverProfile, statistic SelectionStatistic) (int64, err
 	default:
 		return 0, errors.New("maxsearch: unknown selector statistic")
 	}
+}
+
+func profilePreprocessCost(p SolverProfile, state PreprocessState) int64 {
+	if state == PreprocessWarm && p.WarmPreprocessNS > 0 {
+		return p.WarmPreprocessNS
+	}
+	return p.PreprocessNS
 }
 
 func checkedCost(queryNS, preprocessNS, updateNS int64, h WorkloadHorizon) (int64, bool) {
