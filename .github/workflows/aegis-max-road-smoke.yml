@@ -74,6 +74,28 @@ jobs:
               assert d['report']['summary']['primaryWins'] == 120
               print(path, 'selected', selected)
           PY
+      - name: Reject mismatched benchmark identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="$RUNNER_TEMP/aegis-max-road-bin"
+          OUT="$RUNNER_TEMP/road-smoke"
+          python3 - "$OUT/summary.json" "$OUT/bad-summary.json" <<'PY'
+          import json, sys
+          src, dst = sys.argv[1:]
+          d = json.load(open(src, encoding='utf-8'))
+          assert len(d['graphFingerprint']) == 64
+          d['graphFingerprint'] = '0' * 64
+          json.dump(d, open(dst, 'w', encoding='utf-8'), indent=2, sort_keys=True)
+          PY
+          if "$BIN/aegis-max-batch" \
+            --graph "$OUT/andorra-time.aegis" --queries "$OUT/queries.txt" \
+            --auto-select-benchmark "$OUT/bad-summary.json" \
+            --verify --summary-only --timeout 20m > "$OUT/bad-auto.json" 2> "$OUT/bad-auto.err"; then
+            echo "mismatched benchmark fingerprint was unexpectedly accepted" >&2
+            exit 1
+          fi
+          grep -q 'benchmark graph fingerprint mismatch' "$OUT/bad-auto.err"
       - name: Assert evidence and publish summary
         shell: bash
         run: |
@@ -86,6 +108,7 @@ jobs:
           updates = json.load(open(updates_p, encoding='utf-8'))
           assert d['allCorrect'] is True
           assert d['queries'] == 120
+          assert len(d['graphFingerprint']) == 64
           names = {r['algorithm'] for r in d['rankingByQueryMean']}
           required = {'dijkstra','bidijkstra','astar','aegis','routingkit-ch','routingkit-cch','alt'}
           assert required <= names, (required - names)
