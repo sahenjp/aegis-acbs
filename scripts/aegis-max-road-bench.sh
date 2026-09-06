@@ -9,14 +9,22 @@ OUT_DIR="${5:-road-bench-out}"
 SEED="${AEGIS_BENCH_SEED:-424242}"
 ROUTINGKIT_DIR="${ROUTINGKIT_DIR:-${RUNNER_TEMP:-/tmp}/RoutingKit}"
 BIN_DIR="${AEGIS_BENCH_BIN_DIR:-${RUNNER_TEMP:-/tmp}/aegis-max-road-bin}"
+TOKYO_BBOX="${AEGIS_TOKYO_BBOX:-138.90,35.45,140.00,35.90}"
+EXTRACT_BBOX=""
 
 mkdir -p "$OUT_DIR" "$BIN_DIR"
 
 case "$DATASET" in
   andorra) URL="https://download.geofabrik.de/europe/andorra-latest.osm.pbf" ;;
-  tokyo)   URL="https://download.bbbike.org/osm/bbbike/Tokyo/Tokyo.osm.pbf" ;;
-  kanto)   URL="https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf" ;;
-  japan)   URL="https://download.geofabrik.de/asia/japan-latest.osm.pbf" ;;
+  tokyo)
+    # GitHub-hosted runners have repeatedly timed out against the BBBike Tokyo
+    # endpoint. Use the same reliable Geofabrik source as Kanto and cut a
+    # deterministic Tokyo-area bbox before filtering roads.
+    URL="https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf"
+    EXTRACT_BBOX="$TOKYO_BBOX"
+    ;;
+  kanto) URL="https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf" ;;
+  japan) URL="https://download.geofabrik.de/asia/japan-latest.osm.pbf" ;;
   *)
     echo "unknown dataset: $DATASET (expected andorra, tokyo, kanto, or japan)" >&2
     exit 2
@@ -43,18 +51,25 @@ bash scripts/build-routingkit-ch-server.sh "$ROUTINGKIT_DIR" "$BIN_DIR/aegis-rou
 bash scripts/build-routingkit-cch-server.sh "$ROUTINGKIT_DIR" "$BIN_DIR/aegis-routingkit-cch-server"
 go build -o "$BIN_DIR/aegis" ./cmd/aegis
 go build -o "$BIN_DIR/aegis-max-batch" ./cmd/aegis-max-batch
+go build -o "$BIN_DIR/aegis-max-select" ./cmd/aegis-max-select
 go build -o "$BIN_DIR/aegis-routingkit-export" ./cmd/aegis-routingkit-export
 go build -o "$BIN_DIR/aegis-routingkit-cch-export" ./cmd/aegis-routingkit-cch-export
 
 RAW="$OUT_DIR/raw.osm.pbf"
+DATASET_PBF="$RAW"
 ROADS_PBF="$OUT_DIR/roads.osm.pbf"
 ROADS_OSM="$OUT_DIR/roads.osm"
 if [[ ! -s "$RAW" ]]; then
-  curl -fL --retry 6 --retry-all-errors --retry-delay 2 "$URL" -o "$RAW"
+  curl -fL --connect-timeout 30 --max-time 900 \
+    --retry 6 --retry-all-errors --retry-delay 2 "$URL" -o "$RAW"
+fi
+if [[ -n "$EXTRACT_BBOX" ]]; then
+  DATASET_PBF="$OUT_DIR/dataset.osm.pbf"
+  osmium extract -b "$EXTRACT_BBOX" "$RAW" -o "$DATASET_PBF" --overwrite
 fi
 # Keep referenced nodes for highway ways, then expand only the reduced routing
 # dataset to XML. This avoids exploding Tokyo/Kanto/Japan all-feature PBFs.
-osmium tags-filter "$RAW" w/highway -o "$ROADS_PBF" --overwrite
+osmium tags-filter "$DATASET_PBF" w/highway -o "$ROADS_PBF" --overwrite
 osmium cat "$ROADS_PBF" -o "$ROADS_OSM" --overwrite
 
 GRAPH="$OUT_DIR/$DATASET-$METRIC.aegis"
@@ -115,23 +130,27 @@ export LD_LIBRARY_PATH="$ROUTINGKIT_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
   --graph "$GRAPH" --queries "$VERIFY_FILE" --alt-landmarks "$ALT_LANDMARKS" \
   --algorithms alt,bidijkstra --verify --consensus --summary-only --timeout 120m > "$OUT_DIR/alt-consensus.json"
 
-python3 - "$DATASET" "$METRIC" "$URL" "$BASELINE" "$OUT_DIR" <<'PY'
-import json, math, os, sys
-name, metric, url, base_p, out = sys.argv[1:]
+python3 - "$DATASET" "$METRIC" "$URL" "$EXTRACT_BBOX" "$BASELINE" "$OUT_DIR" <<'PY'
+import json, os, sys
+name, metric, url, bbox, base_p, out = sys.argv[1:]
 base = json.load(open(base_p, encoding='utf-8'))
 q = int(base['config']['queries'])
 rows = []
 for s in base['summary']:
     rows.append({'algorithm': s['algorithm'], 'meanNs': s['meanNs'], 'p50Ns': s['medianNs'],
-                 'p95Ns': s['p95Ns'], 'p99Ns': s['p99Ns'], 'preprocessNs': 0,
+                 'p95Ns': s['p95Ns'], 'p99Ns': s['p99Ns'], 'preprocessNs': 0, 'updateNs': 0,
                  'amortizedMeanNs': s['meanNs'], 'correct': s['correct'], 'runs': s['runs']})
 for alg, file, meta_key in [('routingkit-ch','ch.json','routingKitCH'),
                             ('routingkit-cch','cch.json','routingKitCCH'), ('alt','alt.json','alt')]:
     d = json.load(open(os.path.join(out, file), encoding='utf-8'))
     s, m = d['report']['summary'], d[meta_key]
     prep = int(m['preprocessNs'])
+    if alg == 'routingkit-cch':
+        update = int(m.get('customizeNs', prep))
+    else:
+        update = prep
     rows.append({'algorithm': alg, 'meanNs': s['meanNs'], 'p50Ns': s['p50Ns'], 'p95Ns': s['p95Ns'],
-                 'p99Ns': s['p99Ns'], 'preprocessNs': prep,
+                 'p99Ns': s['p99Ns'], 'preprocessNs': prep, 'updateNs': update,
                  'amortizedMeanNs': s['meanNs'] + prep // max(q,1),
                  'correct': s['queries'], 'runs': s['queries']})
 for name2 in ('ch','cch','alt'):
@@ -139,11 +158,16 @@ for name2 in ('ch','cch','alt'):
     if c['consensusReached'] != c['queries']:
         raise SystemExit(f'{name2} failed BiDijkstra consensus')
 rows.sort(key=lambda r: r['meanNs'])
-report = {'dataset': name, 'metric': metric, 'sourceUrl': url, 'seed': base['config']['seed'],
-          'nodes': base['nodes'], 'edges': base['edges'], 'queries': q,
+report = {'dataset': name, 'metric': metric, 'sourceUrl': url, 'sourceBbox': bbox or None,
+          'seed': base['config']['seed'], 'nodes': base['nodes'], 'edges': base['edges'], 'queries': q,
           'allCorrect': base['allCorrect'] and all(r['correct'] == r['runs'] for r in rows),
           'rankingByQueryMean': rows}
 with open(os.path.join(out, 'summary.json'), 'w', encoding='utf-8') as f:
     json.dump(report, f, indent=2, sort_keys=True)
 print(json.dumps(report, indent=2, sort_keys=True))
 PY
+
+# Emit representative workload decisions as benchmark evidence. These are not
+# hard-coded policies; they are computed from this graph's measured timings.
+"$BIN_DIR/aegis-max-select" --benchmark "$OUT_DIR/summary.json" --queries "$QUERIES" --metric-updates 0 > "$OUT_DIR/selection-static.json"
+"$BIN_DIR/aegis-max-select" --benchmark "$OUT_DIR/summary.json" --queries "$QUERIES" --metric-updates 4 > "$OUT_DIR/selection-updates.json"
