@@ -9,15 +9,16 @@ CH/CCH/ALT は query 自体が速くても前処理を必要とします。nativ
 throughput を重視する既定の `mean` objective は、各 graph で測定した profile を使い、solver ごとに次を計算します。
 
 ```text
-mean_score = preprocess
+mean_score = startup/preprocess
            + queries * query_mean
            + metric_updates * update_cost
 ```
 
 - native exact runner: `preprocess = 0`, `update_cost = 0`
-- RoutingKit CH: metric/weight 更新時は再構築が必要なので `update_cost = preprocess`
-- RoutingKit CCH: topology/order を維持できる更新では `update_cost = customize`
-- ALT: 現在の実装では landmark table 再構築として `update_cost = preprocess`
+- RoutingKit CH cold: 初回 CH build を startup、metric/weight 更新時も full rebuild
+- RoutingKit CH warm: fingerprint-bound persisted CH index の load を startup、更新時は元の full rebuild cost
+- RoutingKit CCH: topology/order を初期前処理、対応する metric 更新では `customize` を update cost
+- ALT: 現在の実装では landmark table 再構築を update cost
 
 固定の node 数しきい値は使いません。graph size/topology/hardware の影響は、その graph で測定した `query/preprocess/update` profile に含めます。
 
@@ -26,7 +27,7 @@ mean_score = preprocess
 リアルタイム用途では平均だけ速くても、まれに非常に遅い query がある solver は扱いづらいことがあります。そのため selector は `mean` に加えて `p95` と `p99` を選択できます。
 
 ```text
-risk_score(stat) = preprocess
+risk_score(stat) = startup/preprocess
                  + queries * query_stat
                  + metric_updates * update_cost
 
@@ -35,17 +36,37 @@ stat = mean | p95 | p99
 
 `p95` / `p99` の score は、観測された query 時間をそのまま合計した wall-clock time ではありません。**tail latency を重く評価するための risk objective** です。SLO や応答時間の安定性を優先する workload では、平均値より早い段階で CH/CCH を選ぶために使います。
 
-CLI:
-
 ```bash
 bin/aegis-max-select \
   --benchmark summary.json \
   --queries 1000 \
   --metric-updates 0 \
-  --selection-stat p95
+  --selection-stat p95 \
+  --preprocess-state cold
 ```
 
-persistent batch でも同じ objective を直接使えます。
+## cold / warm preprocessing
+
+同じ graph を繰り返し使うサービスでは、CH を毎プロセス起動時に再構築する必要はありません。Aegis Max の RoutingKit CH sidecar は初回 cold build 後、次を sidecar graph の隣に保存します。
+
+```text
+graph.routingkit-ch.ch-index
+graph.routingkit-ch.ch-index.meta
+```
+
+metadata には cache format magic、Aegis graph fingerprint、cold rebuild time を保存します。次回起動時は sidecar graph header の fingerprint/node count と metadata を確認し、cache が一致すれば全 edge の再読込と CH build をせず `ContractionHierarchy::load_file` で起動します。
+
+`aegis-max-batch` の adaptive selection は既定で `--preprocess-state auto` です。
+
+- matching local CH cache が存在: `warm`
+- cache がない、metadata が違う: `cold`
+- 実験では `--preprocess-state cold|warm` で固定可能
+
+warm evidence が存在しない solver は warm を指定しても cold preprocessing cost へ安全側 fallback します。
+
+cache の graph fingerprint は、古いgraphや別metricとの**取り違えを防ぐためのidentity check**です。RoutingKit の serialized CH は信頼済みローカル生成物としてのみ扱います。fingerprint は悪意ある CH file を安全にsandbox化する仕組みではありません。
+
+## persistent batch
 
 ```bash
 bin/aegis-max-batch \
@@ -59,10 +80,23 @@ bin/aegis-max-batch \
   --auto-select-benchmark summary.json \
   --metric-updates 4 \
   --selection-stat p95 \
+  --preprocess-state auto \
   --verify --summary-only
 ```
 
-`aegis-max-road-bench.sh` は同じ benchmark profile から `mean/p95/p99 × static/4 updates` の選択結果を別 JSON として出力します。従来の `selection-static.json` と `selection-updates.json` は mean objective の互換 alias です。
+selector は候補を全部初期化してから選びません。profile から先に一つ選択し、選択された CH/CCH/ALT だけを初期化します。native solver が選ばれた場合は preprocessed sidecar を起動しません。
+
+## benchmark output
+
+`aegis-max-road-bench.sh` はCHを意図的にcold起動したあと、同じquery setでもう一度warm起動し、次を分離して保存します。
+
+- `preprocessNs`: cold CH build time
+- `warmPreprocessNs`: persisted CH load time
+- `rebuildNs` / `updateNs`: weight/metric変更時のfull CH rebuild time
+- `cacheIndexBytes`: serialized CH index size
+- query `mean/p50/p95/p99`
+
+同じ benchmark profile から `mean/p95/p99 × cold/warm × static/4 updates` の選択結果を生成します。従来の `selection-static.json` / `selection-updates.json` と `selection-{mean,p95,p99}-{static,updates}.json` は conservative cold-start alias です。
 
 ## graph identity
 
@@ -70,35 +104,30 @@ bin/aegis-max-batch \
 
 `aegis-max-batch --auto-select-benchmark` は実行対象 graph の fingerprint と benchmark profile の fingerprint が一致しない場合、solver を選択せずエラーにします。別地域、別metric、古いgraphの測定値を誤って流用しないためです。
 
-selector は候補を全部初期化してから選びません。profile から先に一つ選択し、選択された CH/CCH/ALT だけを初期化します。native solver が選ばれた場合は preprocessed sidecar を起動しません。
-
 ## Andorra smoke
 
 37,191 nodes / 66,104 edges / time metric / 120 identical queries の CI smoke では、全 solver が正解し、CH/CCH/ALT は BiDijkstra consensus を通過しました。
 
-代表的な修正後実測:
+2026-09-06 の persistent-cache smoke の代表値:
 
-| solver | query mean | preprocess | update cost |
-|---|---:|---:|---:|
-| RoutingKit CH | 0.178 ms | 67.581 ms | 67.581 ms |
-| RoutingKit CCH | 0.191 ms | 462.395 ms | 1.591 ms |
-| Aegis | 0.904 ms | 0 | 0 |
-| ALT | 1.024 ms | 85.883 ms | 85.883 ms |
+| solver | query mean | p95 | cold preprocess | warm preprocess | update cost |
+|---|---:|---:|---:|---:|---:|
+| RoutingKit CH | **0.175 ms** | **0.341 ms** | 70.855 ms | **1.405 ms** | 70.855 ms |
+| RoutingKit CCH | 0.200 ms | 0.390 ms | 461.197 ms | - | **1.576 ms** |
+| Aegis | 0.913 ms | 2.317 ms | 0 | 0 | 0 |
+| ALT | 0.992 ms | 3.840 ms | 79.486 ms | - | 79.486 ms |
 
-同じ120 queryで、実際の `aegis-max-batch` mean adaptive経路は次を選択しました。
+CH cache index は約 2.43 MB。cold build 70.855 ms から warm load 1.405 ms へ、約 **50.4x** startup を短縮しました。warm起動後も update cost は cold rebuild 70.855 ms のまま保持します。
 
-- metric update 0回: `routingkit-ch`
-- metric update 4回: `aegis`
+同じ120 queryのadaptive batchでは、mean/static、p95/static、p99/static は CH、mean/4 updates は Aegis を選び、選択したsolver自身が120/120 queryを処理しました。
 
-CI は mean だけでなく `p95` / `p99` objective でも、選ばれた solver を persistent batch で実際に起動し、全 query を検証するようにしています。
-
-## Tokyo benchmark
+## Tokyo cold benchmark
 
 2026-09-06 の GitHub-hosted Ubuntu 24.04 runner で、Geofabrik Kanto PBF を bbox `138.90,35.45,140.00,35.90` に切り出し、time metric / seed `424242` / 300 identical queries で測定しました。
 
 Graph: **2,314,133 nodes / 4,855,881 edges**。native 4 solver と CH/CCH/ALT の全300 queryが正解し、preprocessed solver のconsensus checkも成功しています。
 
-| solver | query mean | p50 | p95 | p99 | preprocess | update cost | 300-query amortized mean |
+| solver | query mean | p50 | p95 | p99 | cold preprocess | update cost | 300-query cold amortized mean |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | RoutingKit CH | **0.294 ms** | 0.289 ms | **0.570 ms** | **0.713 ms** | 31.513 s | 31.513 s | 105.339 ms |
 | RoutingKit CCH | 0.400 ms | 0.397 ms | 0.740 ms | 0.828 ms | 110.949 s | **0.310 s** | 370.230 ms |
@@ -108,15 +137,9 @@ Graph: **2,314,133 nodes / 4,855,881 edges**。native 4 solver と CH/CCH/ALT �
 | Dijkstra | 230.980 ms | 204.991 ms | 477.568 ms | 486.927 ms | 0 | 0 | 230.980 ms |
 | A* | 252.967 ms | 136.217 ms | 748.069 ms | 790.690 ms | 0 | 0 | 252.967 ms |
 
-300-query / update 0 の horizon では、objective によって選択が変わります。
+この旧Tokyo runはpersistent CH cache導入前のcold evidenceです。300-query / update 0 のcold horizonでは、meanはAegis、p95/p99はCHを選びます。最新コードではTokyoのwarm CH load timeも別途再測定し、cold/warmを分けて扱います。
 
-| objective | selected | 理由 |
-|---|---|---|
-| mean | **Aegis** | CH の31.5秒前処理を300 queryでは平均コスト上まだ償却できない |
-| p95 | **RoutingKit CH** | Aegis p95 215.679 ms に対して CH p95 0.570 ms。tail削減が前処理コストを上回る |
-| p99 | **RoutingKit CH** | Aegis p99 274.933 ms に対して CH p99 0.713 ms |
-
-Aegisとの概算break-evenは:
+cold Aegisとの概算break-even:
 
 - mean / update 0: CH 約419 queries
 - p95 / update 0: CH 約147 queries
@@ -125,8 +148,8 @@ Aegisとの概算break-evenは:
 - mean / update 4: CH 約2,091 queries
 - mean / update 4: CCH 約1,491 queries
 
-したがって同じ graph でも、「短いバッチの総処理時間を優先する」のか「個々の query のtailを抑えたい」のかで、合理的な exact solver は変わります。これは固定した node 数しきい値だけでは表現できません。
-
 ## 注意
 
-これらは特定runner image、特定graph、特定metricの実測です。世界最速や全graphでの優位性を示すものではありません。Kanto/Japan、異なるhardware、異なるquery distributionでも同じ手順で再測定し、profileをgraph fingerprintに束縛して使います。
+performance profile は graph だけでなくCPU、memory、compiler、runner loadにも依存します。graph fingerprintは正確性上のidentityを保証しますが、別hardwareで同じ性能を保証するものではありません。Kanto/Japan、異なるhardware、異なるquery distributionでも同じ手順で再測定します。
+
+現在の証拠から「全graphで常に最速」「世界最速」とは主張しません。目的は、exactnessを維持したまま、そのworkloadで実測上もっとも合理的なsolverを選ぶことです。
