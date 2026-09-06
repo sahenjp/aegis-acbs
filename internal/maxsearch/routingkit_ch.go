@@ -140,13 +140,21 @@ func (r *RoutingKitCHRunner) Run(ctx context.Context, g *graph.Graph, source, ta
 		return search.Result{}, errors.New("maxsearch: RoutingKit CH runner is closed")
 	}
 
-	// A sidecar query is a blocking stream operation. If another exact runner
-	// wins or the caller times out, terminating this process promptly releases
-	// the blocked read. A cancelled sidecar is intentionally not reused.
+	// A sidecar query is a blocking stream operation. If the caller actually
+	// cancels while the query is still outstanding, terminate the sidecar to
+	// unblock the read. runPlan also cancels its per-query context immediately
+	// after a successful result; queryDone is already closed in that case and
+	// must win over the cancellation, otherwise a reusable sidecar can be killed
+	// after a perfectly successful query.
 	queryDone := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
+			select {
+			case <-queryDone:
+				return
+			default:
+			}
 			if r.cmd.Process != nil {
 				_ = r.cmd.Process.Kill()
 			}
