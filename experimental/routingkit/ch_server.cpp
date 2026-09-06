@@ -4,14 +4,18 @@
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 
 using namespace RoutingKit;
 using Clock = std::chrono::steady_clock;
+namespace fs = std::filesystem;
 
 static long long positive_ns(Clock::duration d) {
     auto value = std::chrono::duration_cast<std::chrono::nanoseconds>(d).count();
@@ -26,13 +30,83 @@ static bool valid_fingerprint(const std::string& value) {
     return true;
 }
 
+static bool load_cache_meta(
+    const std::string& path,
+    const std::string& fingerprint,
+    long long& rebuild_ns
+) {
+    std::ifstream in(path);
+    if (!in) return false;
+    std::string magic, cached_fingerprint;
+    long long cached_rebuild_ns = 0;
+    in >> magic >> cached_fingerprint >> cached_rebuild_ns;
+    if (!in || magic != "AEGIS_ROUTINGKIT_CH_CACHE_V1" ||
+        cached_fingerprint != fingerprint || cached_rebuild_ns < 1) {
+        return false;
+    }
+    rebuild_ns = cached_rebuild_ns;
+    return true;
+}
+
+static unsigned long long file_size_or_zero(const std::string& path) {
+    std::error_code ec;
+    const auto size = fs::file_size(path, ec);
+    return ec ? 0 : static_cast<unsigned long long>(size);
+}
+
+static void replace_file(const std::string& tmp, const std::string& dst) {
+    std::error_code ec;
+    fs::remove(dst, ec);
+    ec.clear();
+    fs::rename(tmp, dst, ec);
+    if (ec) throw std::runtime_error("cannot atomically replace cache file: " + ec.message());
+}
+
+static void best_effort_save_cache(
+    const ContractionHierarchy& ch,
+    const std::string& cache_path,
+    const std::string& meta_path,
+    const std::string& fingerprint,
+    long long rebuild_ns
+) {
+    const auto nonce = std::to_string(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count()
+    );
+    const std::string cache_tmp = cache_path + ".tmp." + nonce;
+    const std::string meta_tmp = meta_path + ".tmp." + nonce;
+    try {
+        ch.save_file(cache_tmp);
+        {
+            std::ofstream meta(meta_tmp, std::ios::trunc);
+            if (!meta) throw std::runtime_error("cannot create CH cache metadata");
+            meta << "AEGIS_ROUTINGKIT_CH_CACHE_V1\n"
+                 << fingerprint << '\n'
+                 << rebuild_ns << '\n';
+            if (!meta) throw std::runtime_error("cannot write CH cache metadata");
+        }
+        // Publish the data first and the fingerprint-bearing metadata last. A
+        // crash between the two leaves a cache that will not be trusted.
+        replace_file(cache_tmp, cache_path);
+        replace_file(meta_tmp, meta_path);
+    } catch (const std::exception& e) {
+        std::error_code ignored;
+        fs::remove(cache_tmp, ignored);
+        fs::remove(meta_tmp, ignored);
+        std::cerr << "aegis-routingkit-ch-server: cache-save-warning: " << e.what() << '\n';
+    }
+}
+
 int main(int argc, char** argv) {
     try {
         if (argc != 2) {
             std::cerr << "usage: aegis-routingkit-ch-server GRAPH\n";
             return 2;
         }
-        std::ifstream in(argv[1]);
+        const std::string graph_path = argv[1];
+        const std::string cache_path = graph_path + ".ch-index";
+        const std::string meta_path = cache_path + ".meta";
+
+        std::ifstream in(graph_path);
         if (!in) throw std::runtime_error("cannot open graph input");
 
         std::string magic;
@@ -52,22 +126,60 @@ int main(int argc, char** argv) {
             throw std::runtime_error("invalid graph header");
         }
 
-        std::vector<unsigned> tail(edge_count), head(edge_count), weight(edge_count);
-        for (std::size_t i = 0; i < edge_count; ++i) {
-            unsigned long long w = 0;
-            in >> tail[i] >> head[i] >> w;
-            if (!in || tail[i] >= node_count || head[i] >= node_count || w == 0 || w >= inf_weight) {
-                throw std::runtime_error("invalid graph edge");
+        std::unique_ptr<ContractionHierarchy> ch;
+        bool cache_hit = false;
+        long long startup_ns = 0;
+        long long rebuild_ns = 0;
+
+        // CH files are intentionally treated as trusted local cache only. The
+        // graph fingerprint binds the cache to the exact Aegis from/to/cost
+        // graph, but it is not a sandbox for attacker-controlled CH binaries.
+        if (file_size_or_zero(cache_path) > 0 && load_cache_meta(meta_path, fingerprint, rebuild_ns)) {
+            try {
+                const auto load_begin = Clock::now();
+                auto loaded = ContractionHierarchy::load_file(cache_path);
+                startup_ns = positive_ns(Clock::now() - load_begin);
+                if (loaded.node_count() != node_count) {
+                    throw std::runtime_error("cached CH node count mismatch");
+                }
+                ch = std::make_unique<ContractionHierarchy>(std::move(loaded));
+                cache_hit = true;
+            } catch (const std::exception& e) {
+                std::cerr << "aegis-routingkit-ch-server: cache-load-warning: " << e.what() << '\n';
+                ch.reset();
+                cache_hit = false;
+                rebuild_ns = 0;
             }
-            weight[i] = static_cast<unsigned>(w);
         }
 
-        auto prep_begin = Clock::now();
-        ContractionHierarchy ch = ContractionHierarchy::build(node_count, tail, head, weight);
-        const long long preprocess_ns = positive_ns(Clock::now() - prep_begin);
-        ContractionHierarchyQuery query(ch);
+        if (!ch) {
+            std::vector<unsigned> tail(edge_count), head(edge_count), weight(edge_count);
+            for (std::size_t i = 0; i < edge_count; ++i) {
+                unsigned long long w = 0;
+                in >> tail[i] >> head[i] >> w;
+                if (!in || tail[i] >= node_count || head[i] >= node_count || w == 0 || w >= inf_weight) {
+                    throw std::runtime_error("invalid graph edge");
+                }
+                weight[i] = static_cast<unsigned>(w);
+            }
 
-        std::cout << "READY " << preprocess_ns << ' ' << fingerprint << '\n' << std::flush;
+            const auto prep_begin = Clock::now();
+            auto built = ContractionHierarchy::build(node_count, tail, head, weight);
+            rebuild_ns = positive_ns(Clock::now() - prep_begin);
+            startup_ns = rebuild_ns;
+            ch = std::make_unique<ContractionHierarchy>(std::move(built));
+            best_effort_save_cache(*ch, cache_path, meta_path, fingerprint, rebuild_ns);
+        }
+
+        const unsigned long long index_bytes = file_size_or_zero(cache_path);
+        ContractionHierarchyQuery query(*ch);
+
+        // V3 separates actual startup cost from the full rebuild cost. On a
+        // cold start both are equal. On a trusted cache hit startup is only the
+        // load time while metric changes still pay rebuild_ns.
+        std::cout << "READY " << startup_ns << ' ' << rebuild_ns << ' '
+                  << (cache_hit ? 1 : 0) << ' ' << index_bytes << ' '
+                  << fingerprint << '\n' << std::flush;
 
         std::string command;
         while (std::cin >> command) {
