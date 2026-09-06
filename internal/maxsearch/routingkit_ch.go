@@ -24,15 +24,18 @@ const RoutingKitCH search.Algorithm = "routingkit-ch"
 var ErrRoutingKitCHUnreachableUncertified = errors.New("maxsearch: RoutingKit CH unreachable result is not a 64-bit reachability certificate")
 
 type RoutingKitCHRunner struct {
-	mu           sync.Mutex
-	cmd          *exec.Cmd
-	stdin        *bufio.Writer
-	stdout       *bufio.Reader
-	stderr       bytes.Buffer
-	closed       bool
-	preprocessNS int64
-	fingerprint  string
-	graph        *graph.Graph
+	mu              sync.Mutex
+	cmd             *exec.Cmd
+	stdin           *bufio.Writer
+	stdout          *bufio.Reader
+	stderr          bytes.Buffer
+	closed          bool
+	startupNS       int64
+	rebuildNS       int64
+	cacheHit        bool
+	cacheIndexBytes int64
+	fingerprint     string
+	graph           *graph.Graph
 }
 
 // RoutingKitGraphFingerprint binds a sidecar graph to the exact node-indexed
@@ -58,9 +61,13 @@ func RoutingKitGraphFingerprint(g *graph.Graph) string {
 }
 
 // NewRoutingKitCHRunner starts a persistent RoutingKit CH process and waits for
-// preprocessing to finish. The sidecar graph must be created from g by
+// it to become query-ready. The sidecar graph must be created from g by
 // cmd/aegis-routingkit-export. A fingerprint handshake rejects stale or
 // mismatched sidecar graphs before any query result can be accepted.
+//
+// The sidecar may load a trusted local CH cache bound to the graph fingerprint.
+// StartupDuration reports the actual build/load cost of this launch, whereas
+// RebuildDuration is the measured full CH rebuild cost used for metric updates.
 func NewRoutingKitCHRunner(ctx context.Context, binaryPath, graphPath string, g *graph.Graph) (*RoutingKitCHRunner, error) {
 	if strings.TrimSpace(binaryPath) == "" || strings.TrimSpace(graphPath) == "" {
 		return nil, errors.New("maxsearch: RoutingKit CH binary and graph are required")
@@ -95,33 +102,60 @@ func NewRoutingKitCHRunner(ctx context.Context, binaryPath, graphPath string, g 
 		return nil, runner.protocolError("read READY", err)
 	}
 	fields := strings.Fields(line)
-	if len(fields) != 3 || fields[0] != "READY" {
+	if len(fields) != 6 || fields[0] != "READY" {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return nil, runner.protocolError("invalid READY response", nil)
 	}
-	preprocessNS, err := strconv.ParseInt(fields[1], 10, 64)
-	if err != nil || preprocessNS < 1 {
+	startupNS, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || startupNS < 1 {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return nil, runner.protocolError("invalid preprocessing duration", err)
+		return nil, runner.protocolError("invalid startup duration", err)
 	}
-	if fields[2] != expectedFingerprint {
+	rebuildNS, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil || rebuildNS < 1 {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return nil, fmt.Errorf("maxsearch: RoutingKit CH graph fingerprint mismatch: sidecar=%s aegis=%s", fields[2], expectedFingerprint)
+		return nil, runner.protocolError("invalid rebuild duration", err)
 	}
-	runner.preprocessNS = preprocessNS
+	cacheHitInt, err := strconv.Atoi(fields[3])
+	if err != nil || (cacheHitInt != 0 && cacheHitInt != 1) {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, runner.protocolError("invalid cache-hit flag", err)
+	}
+	cacheIndexBytes, err := strconv.ParseInt(fields[4], 10, 64)
+	if err != nil || cacheIndexBytes < 0 {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, runner.protocolError("invalid cache index size", err)
+	}
+	if fields[5] != expectedFingerprint {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("maxsearch: RoutingKit CH graph fingerprint mismatch: sidecar=%s aegis=%s", fields[5], expectedFingerprint)
+	}
+	runner.startupNS = startupNS
+	runner.rebuildNS = rebuildNS
+	runner.cacheHit = cacheHitInt == 1
+	runner.cacheIndexBytes = cacheIndexBytes
 	return runner, nil
 }
 
 func (r *RoutingKitCHRunner) Name() search.Algorithm { return RoutingKitCH }
 
+// PreprocessDuration remains the compatibility name for the actual cost paid
+// to make this sidecar ready. On a cache hit this is the CH load duration.
 func (r *RoutingKitCHRunner) PreprocessDuration() time.Duration {
-	return time.Duration(r.preprocessNS)
+	return time.Duration(r.startupNS)
 }
 
-func (r *RoutingKitCHRunner) Fingerprint() string { return r.fingerprint }
+func (r *RoutingKitCHRunner) StartupDuration() time.Duration { return time.Duration(r.startupNS) }
+func (r *RoutingKitCHRunner) RebuildDuration() time.Duration { return time.Duration(r.rebuildNS) }
+func (r *RoutingKitCHRunner) CacheHit() bool                { return r.cacheHit }
+func (r *RoutingKitCHRunner) CacheIndexBytes() int64       { return r.cacheIndexBytes }
+func (r *RoutingKitCHRunner) Fingerprint() string          { return r.fingerprint }
 
 func (r *RoutingKitCHRunner) Run(ctx context.Context, g *graph.Graph, source, target int) (search.Result, error) {
 	if err := ctx.Err(); err != nil {
@@ -273,7 +307,7 @@ func parseRoutingKitCHResponse(line string, nodeCount int) (search.Result, error
 		return search.Result{
 			Path: path,
 			Stats: search.Stats{
-				Algorithm: RoutingKitCH,
+				Algorithm:  RoutingKitCH,
 				DurationNS: duration,
 				Distance:   distance,
 				Reachable:  true,
