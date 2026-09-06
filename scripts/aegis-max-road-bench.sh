@@ -136,6 +136,7 @@ name, metric, url, bbox, base_p, out = sys.argv[1:]
 base = json.load(open(base_p, encoding='utf-8'))
 q = int(base['config']['queries'])
 rows = []
+graph_fingerprint = None
 for s in base['summary']:
     rows.append({'algorithm': s['algorithm'], 'meanNs': s['meanNs'], 'p50Ns': s['medianNs'],
                  'p95Ns': s['p95Ns'], 'p99Ns': s['p99Ns'], 'preprocessNs': 0, 'updateNs': 0,
@@ -144,6 +145,12 @@ for alg, file, meta_key in [('routingkit-ch','ch.json','routingKitCH'),
                             ('routingkit-cch','cch.json','routingKitCCH'), ('alt','alt.json','alt')]:
     d = json.load(open(os.path.join(out, file), encoding='utf-8'))
     s, m = d['report']['summary'], d[meta_key]
+    fp = m.get('fingerprint')
+    if fp:
+        if graph_fingerprint is None:
+            graph_fingerprint = fp
+        elif fp != graph_fingerprint:
+            raise SystemExit(f'{alg} graph fingerprint disagrees with another preprocessed solver')
     prep = int(m['preprocessNs'])
     if alg == 'routingkit-cch':
         update = int(m.get('customizeNs', prep))
@@ -153,6 +160,8 @@ for alg, file, meta_key in [('routingkit-ch','ch.json','routingKitCH'),
                  'p99Ns': s['p99Ns'], 'preprocessNs': prep, 'updateNs': update,
                  'amortizedMeanNs': s['meanNs'] + prep // max(q,1),
                  'correct': s['queries'], 'runs': s['queries']})
+if graph_fingerprint is None or len(graph_fingerprint) != 64:
+    raise SystemExit('benchmark did not produce a valid graph fingerprint')
 for name2 in ('ch','cch','alt'):
     c = json.load(open(os.path.join(out, f'{name2}-consensus.json'), encoding='utf-8'))['report']['summary']
     if c['consensusReached'] != c['queries']:
@@ -160,6 +169,7 @@ for name2 in ('ch','cch','alt'):
 rows.sort(key=lambda r: r['meanNs'])
 report = {'dataset': name, 'metric': metric, 'sourceUrl': url, 'sourceBbox': bbox or None,
           'seed': base['config']['seed'], 'nodes': base['nodes'], 'edges': base['edges'], 'queries': q,
+          'graphFingerprint': graph_fingerprint,
           'allCorrect': base['allCorrect'] and all(r['correct'] == r['runs'] for r in rows),
           'rankingByQueryMean': rows}
 with open(os.path.join(out, 'summary.json'), 'w', encoding='utf-8') as f:
