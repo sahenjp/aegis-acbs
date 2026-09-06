@@ -179,5 +179,14 @@ PY
 
 # Emit representative workload decisions as benchmark evidence. These are not
 # hard-coded policies; they are computed from this graph's measured timings.
-"$BIN_DIR/aegis-max-select" --benchmark "$OUT_DIR/summary.json" --queries "$QUERIES" --metric-updates 0 > "$OUT_DIR/selection-static.json"
-"$BIN_DIR/aegis-max-select" --benchmark "$OUT_DIR/summary.json" --queries "$QUERIES" --metric-updates 4 > "$OUT_DIR/selection-updates.json"
+for stat in mean p95 p99; do
+  "$BIN_DIR/aegis-max-select" \
+    --benchmark "$OUT_DIR/summary.json" --queries "$QUERIES" --metric-updates 0 \
+    --selection-stat "$stat" > "$OUT_DIR/selection-$stat-static.json"
+  "$BIN_DIR/aegis-max-select" \
+    --benchmark "$OUT_DIR/summary.json" --queries "$QUERIES" --metric-updates 4 \
+    --selection-stat "$stat" > "$OUT_DIR/selection-$stat-updates.json"
+done
+# Keep the original filenames as mean-objective compatibility aliases.
+cp "$OUT_DIR/selection-mean-static.json" "$OUT_DIR/selection-static.json"
+cp "$OUT_DIR/selection-mean-updates.json" "$OUT_DIR/selection-updates.json"
