@@ -7,6 +7,7 @@ on:
     paths:
       - 'cmd/aegis-max/**'
       - 'cmd/aegis-max-batch/**'
+      - 'cmd/aegis-max-select/**'
       - 'cmd/aegis-routingkit-export/**'
       - 'cmd/aegis-routingkit-cch-export/**'
       - 'internal/maxsearch/**'
@@ -14,6 +15,7 @@ on:
       - 'scripts/build-routingkit-ch-server.sh'
       - 'scripts/build-routingkit-cch-server.sh'
       - 'docs/AEGIS_MAX_EXACT.md'
+      - 'docs/AEGIS_MAX_ADAPTIVE.md'
       - '.github/workflows/aegis-max-exact.yml'
 
 permissions:
@@ -40,8 +42,8 @@ jobs:
           go-version: ${{ matrix.go }}
           cache: true
       - run: go test ./internal/maxsearch ./internal/search ./internal/graph
-      - run: go vet ./internal/maxsearch ./cmd/aegis-max ./cmd/aegis-max-batch ./cmd/aegis-routingkit-export ./cmd/aegis-routingkit-cch-export
-      - run: go build ./cmd/aegis-max ./cmd/aegis-max-batch ./cmd/aegis-routingkit-export ./cmd/aegis-routingkit-cch-export
+      - run: go vet ./internal/maxsearch ./cmd/aegis-max ./cmd/aegis-max-batch ./cmd/aegis-max-select ./cmd/aegis-routingkit-export ./cmd/aegis-routingkit-cch-export
+      - run: go build ./cmd/aegis-max ./cmd/aegis-max-batch ./cmd/aegis-max-select ./cmd/aegis-routingkit-export ./cmd/aegis-routingkit-cch-export
 
   integration:
     runs-on: ubuntu-latest
@@ -56,6 +58,7 @@ jobs:
           cache: true
       - run: go build -o /tmp/aegis ./cmd/aegis
       - run: go build -o /tmp/aegis-max ./cmd/aegis-max
+      - run: go build -o /tmp/aegis-max-select ./cmd/aegis-max-select
       - run: /tmp/aegis import-osm --input benchdata/hatfield-uk.osm --output /tmp/hatfield.aegis --profile car --metric distance
       - run: /tmp/aegis-max --graph /tmp/hatfield.aegis --source 0 --target 10 --mode efficient --verify > /tmp/efficient.json
       - run: /tmp/aegis-max --graph /tmp/hatfield.aegis --source 0 --target 10 --mode latency --parallel 3 --verify > /tmp/latency.json
@@ -86,6 +89,7 @@ jobs:
           go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
           go build -o "$RUNNER_TEMP/aegis-max" ./cmd/aegis-max
           go build -o "$RUNNER_TEMP/aegis-max-batch" ./cmd/aegis-max-batch
+          go build -o "$RUNNER_TEMP/aegis-max-select" ./cmd/aegis-max-select
           go build -o "$RUNNER_TEMP/aegis-routingkit-export" ./cmd/aegis-routingkit-export
           go build -o "$RUNNER_TEMP/aegis-routingkit-cch-export" ./cmd/aegis-routingkit-cch-export
       - name: Export identical Hatfield graph and choose reachable pairs
@@ -128,11 +132,12 @@ jobs:
                   out.write(f'{source} {target}\n')
           print('using guaranteed reachable directed edges:', pairs)
           PY
-      - name: Verify CH path and native consensus
+      - name: Verify CH cold build, warm load, path and native consensus
         shell: bash
         run: |
           set -euo pipefail
           export LD_LIBRARY_PATH="$RUNNER_TEMP/RoutingKit/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          rm -f "$RUNNER_TEMP/hatfield.routingkit-ch.ch-index" "$RUNNER_TEMP/hatfield.routingkit-ch.ch-index.meta"
           "$RUNNER_TEMP/aegis-max" \
             --graph "$RUNNER_TEMP/hatfield.aegis" \
             --source "$RK_SOURCE" --target "$RK_TARGET" --mode efficient --verify \
@@ -150,15 +155,21 @@ jobs:
           python3 - <<'PY'
           import json, os
           root = os.environ['RUNNER_TEMP']
-          one = json.load(open(os.path.join(root, 'ch-only.json')))
-          two = json.load(open(os.path.join(root, 'ch-consensus.json')))
-          assert one['winner'] == 'routingkit-ch'
-          assert one['result']['stats']['reachable'] is True
-          assert one['routingKitCH']['preprocessNs'] > 0
-          assert len(one['routingKitCH']['fingerprint']) == 64
-          assert two['consensusReached'] is True
-          assert two['result']['stats']['distance'] == one['result']['stats']['distance']
-          print('routingkit-ch integration ok')
+          cold = json.load(open(os.path.join(root, 'ch-only.json')))
+          warm = json.load(open(os.path.join(root, 'ch-consensus.json')))
+          assert cold['winner'] == 'routingkit-ch'
+          assert cold['result']['stats']['reachable'] is True
+          c = cold['routingKitCH']
+          w = warm['routingKitCH']
+          assert c['cacheHit'] is False
+          assert w['cacheHit'] is True
+          assert c['preprocessNs'] > 0 and c['rebuildNs'] == c['preprocessNs']
+          assert w['preprocessNs'] > 0 and w['rebuildNs'] == c['rebuildNs']
+          assert c['cacheIndexBytes'] > 0 and w['cacheIndexBytes'] == c['cacheIndexBytes']
+          assert len(c['fingerprint']) == 64 and w['fingerprint'] == c['fingerprint']
+          assert warm['consensusReached'] is True
+          assert warm['result']['stats']['distance'] == cold['result']['stats']['distance']
+          print('routingkit-ch cold/warm integration ok')
           PY
       - name: Verify CCH path and native consensus
         shell: bash
@@ -218,11 +229,15 @@ jobs:
           python3 - <<'PY'
           import json, os
           root = os.environ['RUNNER_TEMP']
-          for filename, alg, metadata in [
-              ('ch-batch.json', 'routingkit-ch', 'routingKitCH'),
-              ('cch-batch.json', 'routingkit-cch', 'routingKitCCH'),
+          ch = json.load(open(os.path.join(root, 'ch-batch.json')))
+          assert ch['routingKitCH']['cacheHit'] is True
+          assert ch['routingKitCH']['preprocessNs'] > 0
+          assert ch['routingKitCH']['rebuildNs'] > 0
+          assert ch['routingKitCH']['cacheIndexBytes'] > 0
+          for d, alg, metadata in [
+              (ch, 'routingkit-ch', 'routingKitCH'),
+              (json.load(open(os.path.join(root, 'cch-batch.json'))), 'routingkit-cch', 'routingKitCCH'),
           ]:
-              d = json.load(open(os.path.join(root, filename)))
               s = d['report']['summary']
               assert s['queries'] >= 3
               assert s['reachable'] == s['queries']
