@@ -17,9 +17,6 @@ mkdir -p "$OUT_DIR" "$BIN_DIR"
 case "$DATASET" in
   andorra) URL="https://download.geofabrik.de/europe/andorra-latest.osm.pbf" ;;
   tokyo)
-    # GitHub-hosted runners have repeatedly timed out against the BBBike Tokyo
-    # endpoint. Use the same reliable Geofabrik source as Kanto and cut a
-    # deterministic Tokyo-area bbox before filtering roads.
     URL="https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf"
     EXTRACT_BBOX="$TOKYO_BBOX"
     ;;
@@ -67,8 +64,6 @@ if [[ -n "$EXTRACT_BBOX" ]]; then
   DATASET_PBF="$OUT_DIR/dataset.osm.pbf"
   osmium extract -b "$EXTRACT_BBOX" "$RAW" -o "$DATASET_PBF" --overwrite
 fi
-# Keep referenced nodes for highway ways, then expand only the reduced routing
-# dataset to XML. This avoids exploding Tokyo/Kanto/Japan all-feature PBFs.
 osmium tags-filter "$DATASET_PBF" w/highway -o "$ROADS_PBF" --overwrite
 osmium cat "$ROADS_PBF" -o "$ROADS_OSM" --overwrite
 
@@ -106,10 +101,17 @@ PY
 "$BIN_DIR/aegis-routingkit-cch-export" --graph "$GRAPH" --output "$CCH_GRAPH"
 export LD_LIBRARY_PATH="$ROUTINGKIT_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+# First CH launch is deliberately cold. The sidecar creates a fingerprint-bound
+# local index. The second launch measures the warm load path on identical pairs.
+rm -f "$CH_GRAPH.ch-index" "$CH_GRAPH.ch-index.meta"
 "$BIN_DIR/aegis-max-batch" \
   --graph "$GRAPH" --queries "$QUERIES_FILE" \
   --routingkit-ch-server "$BIN_DIR/aegis-routingkit-ch-server" --routingkit-ch-graph "$CH_GRAPH" \
   --algorithms routingkit-ch --verify --summary-only --timeout 120m > "$OUT_DIR/ch.json"
+"$BIN_DIR/aegis-max-batch" \
+  --graph "$GRAPH" --queries "$QUERIES_FILE" \
+  --routingkit-ch-server "$BIN_DIR/aegis-routingkit-ch-server" --routingkit-ch-graph "$CH_GRAPH" \
+  --algorithms routingkit-ch --verify --summary-only --timeout 120m > "$OUT_DIR/ch-warm.json"
 "$BIN_DIR/aegis-max-batch" \
   --graph "$GRAPH" --queries "$QUERIES_FILE" \
   --routingkit-cch-server "$BIN_DIR/aegis-routingkit-cch-server" --routingkit-cch-graph "$CCH_GRAPH" \
@@ -141,6 +143,12 @@ for s in base['summary']:
     rows.append({'algorithm': s['algorithm'], 'meanNs': s['meanNs'], 'p50Ns': s['medianNs'],
                  'p95Ns': s['p95Ns'], 'p99Ns': s['p99Ns'], 'preprocessNs': 0, 'updateNs': 0,
                  'amortizedMeanNs': s['meanNs'], 'correct': s['correct'], 'runs': s['runs']})
+
+warm_ch = json.load(open(os.path.join(out, 'ch-warm.json'), encoding='utf-8'))
+warm_meta = warm_ch['routingKitCH']
+if warm_meta.get('cacheHit') is not True:
+    raise SystemExit('second CH launch did not use the persisted index')
+
 for alg, file, meta_key in [('routingkit-ch','ch.json','routingKitCH'),
                             ('routingkit-cch','cch.json','routingKitCCH'), ('alt','alt.json','alt')]:
     d = json.load(open(os.path.join(out, file), encoding='utf-8'))
@@ -152,14 +160,31 @@ for alg, file, meta_key in [('routingkit-ch','ch.json','routingKitCH'),
         elif fp != graph_fingerprint:
             raise SystemExit(f'{alg} graph fingerprint disagrees with another preprocessed solver')
     prep = int(m['preprocessNs'])
-    if alg == 'routingkit-cch':
+    if alg == 'routingkit-ch':
+        if m.get('cacheHit') is not False:
+            raise SystemExit('cold CH launch unexpectedly reported a cache hit')
+        update = int(m.get('rebuildNs', prep))
+        if update < 1 or int(m.get('cacheIndexBytes', 0)) < 1:
+            raise SystemExit('CH rebuild/index evidence missing')
+        warm_startup = int(warm_meta['preprocessNs'])
+        if int(warm_meta.get('rebuildNs', 0)) != update:
+            raise SystemExit('warm CH launch lost the original rebuild cost')
+    elif alg == 'routingkit-cch':
         update = int(m.get('customizeNs', prep))
+        warm_startup = None
     else:
         update = prep
-    rows.append({'algorithm': alg, 'meanNs': s['meanNs'], 'p50Ns': s['p50Ns'], 'p95Ns': s['p95Ns'],
-                 'p99Ns': s['p99Ns'], 'preprocessNs': prep, 'updateNs': update,
-                 'amortizedMeanNs': s['meanNs'] + prep // max(q,1),
-                 'correct': s['queries'], 'runs': s['queries']})
+        warm_startup = None
+    row = {'algorithm': alg, 'meanNs': s['meanNs'], 'p50Ns': s['p50Ns'], 'p95Ns': s['p95Ns'],
+           'p99Ns': s['p99Ns'], 'preprocessNs': prep, 'updateNs': update,
+           'amortizedMeanNs': s['meanNs'] + prep // max(q,1),
+           'correct': s['queries'], 'runs': s['queries']}
+    if alg == 'routingkit-ch':
+        row.update({'warmStartupNs': warm_startup,
+                    'cacheIndexBytes': int(m['cacheIndexBytes']),
+                    'rebuildNs': update})
+    rows.append(row)
+
 if graph_fingerprint is None or len(graph_fingerprint) != 64:
     raise SystemExit('benchmark did not produce a valid graph fingerprint')
 for name2 in ('ch','cch','alt'):
@@ -177,8 +202,6 @@ with open(os.path.join(out, 'summary.json'), 'w', encoding='utf-8') as f:
 print(json.dumps(report, indent=2, sort_keys=True))
 PY
 
-# Emit representative workload decisions as benchmark evidence. These are not
-# hard-coded policies; they are computed from this graph's measured timings.
 for stat in mean p95 p99; do
   "$BIN_DIR/aegis-max-select" \
     --benchmark "$OUT_DIR/summary.json" --queries "$QUERIES" --metric-updates 0 \
@@ -187,6 +210,5 @@ for stat in mean p95 p99; do
     --benchmark "$OUT_DIR/summary.json" --queries "$QUERIES" --metric-updates 4 \
     --selection-stat "$stat" > "$OUT_DIR/selection-$stat-updates.json"
 done
-# Keep the original filenames as mean-objective compatibility aliases.
 cp "$OUT_DIR/selection-mean-static.json" "$OUT_DIR/selection-static.json"
 cp "$OUT_DIR/selection-mean-updates.json" "$OUT_DIR/selection-updates.json"
