@@ -51,6 +51,7 @@ jobs:
           updates = json.load(open(updates_p, encoding='utf-8'))
           assert d['allCorrect'] is True
           assert d['queries'] == 300
+          assert len(d['graphFingerprint']) == 64
           with open(dst, 'a', encoding='utf-8') as out:
               out.write('## Tokyo / time — 300 identical exact queries\n\n')
               out.write(f"{d['nodes']:,} nodes · {d['edges']:,} edges · all correct: **true**\n\n")
@@ -61,10 +62,21 @@ jobs:
                   out.write(f"| {r['algorithm']} | {ms(r['meanNs'])} | {ms(r['p50Ns'])} | {ms(r['p95Ns'])} | {ms(r['p99Ns'])} | {ms(r['preprocessNs'])} | {ms(r['updateNs'])} | {ms(r['amortizedMeanNs'])} |\n")
           print(json.dumps({'benchmark': d, 'staticSelection': static, 'updatedSelection': updates}, indent=2, sort_keys=True))
           PY
-      - name: Upload benchmark evidence
+      - name: Upload compact benchmark evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: aegis-max-tokyo-time-300-alt16
-          path: ${{ runner.temp }}/tokyo-bench/
+          path: |
+            ${{ runner.temp }}/tokyo-bench/summary.json
+            ${{ runner.temp }}/tokyo-bench/selection-static.json
+            ${{ runner.temp }}/tokyo-bench/selection-updates.json
+            ${{ runner.temp }}/tokyo-bench/ch.json
+            ${{ runner.temp }}/tokyo-bench/cch.json
+            ${{ runner.temp }}/tokyo-bench/alt.json
+            ${{ runner.temp }}/tokyo-bench/ch-consensus.json
+            ${{ runner.temp }}/tokyo-bench/cch-consensus.json
+            ${{ runner.temp }}/tokyo-bench/alt-consensus.json
+            ${{ runner.temp }}/tokyo-bench/queries.txt
+            ${{ runner.temp }}/tokyo-bench/verify-queries.txt
           if-no-files-found: error
           retention-days: 30
