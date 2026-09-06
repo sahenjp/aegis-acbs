@@ -38,11 +38,23 @@ type altMetadata struct {
 	DistanceTableBytes uint64 `json:"distanceTableBytes"`
 }
 
+type benchmarkSummary struct {
+	RankingByQueryMean []benchmarkRow `json:"rankingByQueryMean"`
+}
+
+type benchmarkRow struct {
+	Algorithm    search.Algorithm `json:"algorithm"`
+	MeanNS       int64            `json:"meanNs"`
+	PreprocessNS int64            `json:"preprocessNs"`
+	UpdateNS     int64            `json:"updateNs"`
+}
+
 type output struct {
-	Report        maxsearch.BatchReport  `json:"report"`
-	RoutingKitCH  *routingKitCHMetadata  `json:"routingKitCH,omitempty"`
-	RoutingKitCCH *routingKitCCHMetadata `json:"routingKitCCH,omitempty"`
-	ALT           *altMetadata           `json:"alt,omitempty"`
+	Report        maxsearch.BatchReport      `json:"report"`
+	Selection     *maxsearch.SolverSelection `json:"selection,omitempty"`
+	RoutingKitCH  *routingKitCHMetadata      `json:"routingKitCH,omitempty"`
+	RoutingKitCCH *routingKitCCHMetadata     `json:"routingKitCCH,omitempty"`
+	ALT           *altMetadata               `json:"alt,omitempty"`
 }
 
 func main() {
@@ -54,6 +66,8 @@ func main() {
 	routingKitCCHGraph := flag.String("routingkit-cch-graph", "", "graph produced by aegis-routingkit-cch-export")
 	altLandmarks := flag.Int("alt-landmarks", 0, "build and reuse an exact directed ALT runner with this many landmarks (1-32; 0 disables ALT)")
 	algorithmsText := flag.String("algorithms", "", "comma-separated exact runner order; defaults to configured CH, CCH, ALT, bidijkstra, dijkstra")
+	autoSelectBenchmark := flag.String("auto-select-benchmark", "", "summary.json from aegis-max-road-bench.sh; selects one available exact runner for this batch")
+	metricUpdates := flag.Int64("metric-updates", 0, "expected metric/edge-weight updates over this batch horizon for adaptive selection")
 	consensus := flag.Bool("consensus", false, "require two successful exact runners to agree for every query")
 	verify := flag.Bool("verify", true, "validate every successful path")
 	summaryOnly := flag.Bool("summary-only", false, "omit per-query samples from JSON output")
@@ -72,12 +86,13 @@ func main() {
 	if *altLandmarks < 0 || *altLandmarks > 32 {
 		fatal(errors.New("--alt-landmarks must be between 0 and 32"))
 	}
-	useCH := *routingKitCHServer != ""
-	useCCH := *routingKitCCHServer != ""
-	useALT := *altLandmarks > 0
-	if !useCH && !useCCH && !useALT {
-		fatal(errors.New("configure at least one CH, CCH, or ALT preprocessed runner for persistent batch mode"))
+	if *metricUpdates < 0 {
+		fatal(errors.New("--metric-updates cannot be negative"))
 	}
+
+	configuredCH := *routingKitCHServer != ""
+	configuredCCH := *routingKitCCHServer != ""
+	configuredALT := *altLandmarks > 0
 
 	g, err := graph.Load(*graphPath)
 	if err != nil {
@@ -87,29 +102,48 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+
 	algorithms := parseAlgorithms(*algorithmsText)
-	if len(algorithms) == 0 {
-		if useCH {
+	var selection *maxsearch.SolverSelection
+	if *autoSelectBenchmark != "" {
+		if len(algorithms) != 0 {
+			fatal(errors.New("--auto-select-benchmark and --algorithms are mutually exclusive"))
+		}
+		sel, err := selectFromBenchmark(*autoSelectBenchmark, int64(len(queries)), *metricUpdates, configuredCH, configuredCCH, configuredALT)
+		if err != nil {
+			fatal(err)
+		}
+		selection = &sel
+		algorithms = []search.Algorithm{sel.Selected}
+	} else if len(algorithms) == 0 {
+		if !configuredCH && !configuredCCH && !configuredALT {
+			fatal(errors.New("configure at least one CH, CCH, or ALT preprocessed runner, provide --algorithms, or use --auto-select-benchmark"))
+		}
+		if configuredCH {
 			algorithms = append(algorithms, maxsearch.RoutingKitCH)
 		}
-		if useCCH {
+		if configuredCCH {
 			algorithms = append(algorithms, maxsearch.RoutingKitCCH)
 		}
-		if useALT {
+		if configuredALT {
 			algorithms = append(algorithms, maxsearch.ALT)
 		}
 		algorithms = append(algorithms, search.BiDijkstra, search.Dijkstra)
-	} else {
-		if containsAlgorithm(algorithms, maxsearch.RoutingKitCCH) && !useCCH {
-			fatal(errors.New("routingkit-cch selected without a configured CCH sidecar"))
-		}
-		if containsAlgorithm(algorithms, maxsearch.RoutingKitCH) && !useCH {
-			fatal(errors.New("routingkit-ch selected without a configured CH sidecar"))
-		}
-		if containsAlgorithm(algorithms, maxsearch.ALT) && !useALT {
-			fatal(errors.New("alt selected without --alt-landmarks"))
-		}
 	}
+
+	if containsAlgorithm(algorithms, maxsearch.RoutingKitCCH) && !configuredCCH {
+		fatal(errors.New("routingkit-cch selected without a configured CCH sidecar"))
+	}
+	if containsAlgorithm(algorithms, maxsearch.RoutingKitCH) && !configuredCH {
+		fatal(errors.New("routingkit-ch selected without a configured CH sidecar"))
+	}
+	if containsAlgorithm(algorithms, maxsearch.ALT) && !configuredALT {
+		fatal(errors.New("alt selected without --alt-landmarks"))
+	}
+
+	useCH := configuredCH && containsAlgorithm(algorithms, maxsearch.RoutingKitCH)
+	useCCH := configuredCCH && containsAlgorithm(algorithms, maxsearch.RoutingKitCCH)
+	useALT := configuredALT && containsAlgorithm(algorithms, maxsearch.ALT)
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
@@ -185,7 +219,7 @@ func main() {
 	if *summaryOnly {
 		report.Samples = nil
 	}
-	result := output{Report: report}
+	result := output{Report: report, Selection: selection}
 	if ch != nil {
 		info, err := os.Stat(*routingKitCHGraph)
 		if err != nil {
@@ -223,6 +257,37 @@ func main() {
 	if err := enc.Encode(result); err != nil {
 		fatal(err)
 	}
+}
+
+func selectFromBenchmark(path string, queries, updates int64, configuredCH, configuredCCH, configuredALT bool) (maxsearch.SolverSelection, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return maxsearch.SolverSelection{}, err
+	}
+	var summary benchmarkSummary
+	if err := json.Unmarshal(data, &summary); err != nil {
+		return maxsearch.SolverSelection{}, err
+	}
+	profiles := make([]maxsearch.SolverProfile, 0, len(summary.RankingByQueryMean))
+	for _, row := range summary.RankingByQueryMean {
+		available := true
+		switch row.Algorithm {
+		case maxsearch.RoutingKitCH:
+			available = configuredCH
+		case maxsearch.RoutingKitCCH:
+			available = configuredCCH
+		case maxsearch.ALT:
+			available = configuredALT
+		}
+		if !available {
+			continue
+		}
+		profiles = append(profiles, maxsearch.SolverProfile{
+			Algorithm: row.Algorithm, QueryNS: row.MeanNS,
+			PreprocessNS: row.PreprocessNS, UpdateNS: row.UpdateNS,
+		})
+	}
+	return maxsearch.SelectSolver(profiles, maxsearch.WorkloadHorizon{Queries: queries, MetricUpdates: updates})
 }
 
 func readQueries(path string) ([]maxsearch.BatchQuery, error) {
