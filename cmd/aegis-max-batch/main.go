@@ -19,6 +19,9 @@ import (
 
 type routingKitCHMetadata struct {
 	PreprocessNS      int64  `json:"preprocessNs"`
+	RebuildNS         int64  `json:"rebuildNs"`
+	CacheHit          bool   `json:"cacheHit"`
+	CacheIndexBytes   int64  `json:"cacheIndexBytes"`
 	Fingerprint       string `json:"fingerprint"`
 	SidecarGraphBytes int64  `json:"sidecarGraphBytes"`
 }
@@ -237,6 +240,9 @@ func main() {
 		}
 		result.RoutingKitCH = &routingKitCHMetadata{
 			PreprocessNS:      ch.PreprocessDuration().Nanoseconds(),
+			RebuildNS:         ch.RebuildDuration().Nanoseconds(),
+			CacheHit:          ch.CacheHit(),
+			CacheIndexBytes:   ch.CacheIndexBytes(),
 			Fingerprint:       ch.Fingerprint(),
 			SidecarGraphBytes: info.Size(),
 		}
