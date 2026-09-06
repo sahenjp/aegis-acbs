@@ -47,12 +47,13 @@ type benchmarkSummary struct {
 }
 
 type benchmarkRow struct {
-	Algorithm    search.Algorithm `json:"algorithm"`
-	MeanNS       int64            `json:"meanNs"`
-	P95NS        int64            `json:"p95Ns"`
-	P99NS        int64            `json:"p99Ns"`
-	PreprocessNS int64            `json:"preprocessNs"`
-	UpdateNS     int64            `json:"updateNs"`
+	Algorithm        search.Algorithm `json:"algorithm"`
+	MeanNS           int64            `json:"meanNs"`
+	P95NS            int64            `json:"p95Ns"`
+	P99NS            int64            `json:"p99Ns"`
+	PreprocessNS     int64            `json:"preprocessNs"`
+	WarmPreprocessNS int64            `json:"warmPreprocessNs"`
+	UpdateNS         int64            `json:"updateNs"`
 }
 
 type output struct {
@@ -75,6 +76,7 @@ func main() {
 	autoSelectBenchmark := flag.String("auto-select-benchmark", "", "summary.json from aegis-max-road-bench.sh; selects one available exact runner for this exact graph")
 	metricUpdates := flag.Int64("metric-updates", 0, "expected metric/edge-weight updates over this batch horizon for adaptive selection")
 	selectionStat := flag.String("selection-stat", "mean", "per-query statistic used by adaptive selection: mean, p95, or p99")
+	preprocessState := flag.String("preprocess-state", "auto", "adaptive preprocessing state: auto, cold, or warm; auto uses a matching local CH cache when available")
 	consensus := flag.Bool("consensus", false, "require two successful exact runners to agree for every query")
 	verify := flag.Bool("verify", true, "validate every successful path")
 	summaryOnly := flag.Bool("summary-only", false, "omit per-query samples from JSON output")
@@ -96,6 +98,9 @@ func main() {
 	if *metricUpdates < 0 {
 		fatal(errors.New("--metric-updates cannot be negative"))
 	}
+	if *preprocessState != "auto" && *preprocessState != string(maxsearch.PreprocessCold) && *preprocessState != string(maxsearch.PreprocessWarm) {
+		fatal(errors.New("--preprocess-state must be auto, cold, or warm"))
+	}
 
 	configuredCH := *routingKitCHServer != ""
 	configuredCCH := *routingKitCCHServer != ""
@@ -116,12 +121,15 @@ func main() {
 		if len(algorithms) != 0 {
 			fatal(errors.New("--auto-select-benchmark and --algorithms are mutually exclusive"))
 		}
+		fingerprint := maxsearch.RoutingKitGraphFingerprint(g)
+		state := resolvePreprocessState(*preprocessState, configuredCH, *routingKitCHGraph, fingerprint)
 		sel, err := selectFromBenchmark(
 			*autoSelectBenchmark,
-			g,
+			fingerprint,
 			int64(len(queries)),
 			*metricUpdates,
 			maxsearch.SelectionStatistic(*selectionStat),
+			state,
 			configuredCH,
 			configuredCCH,
 			configuredALT,
@@ -275,7 +283,7 @@ func main() {
 	}
 }
 
-func selectFromBenchmark(path string, g *graph.Graph, queries, updates int64, statistic maxsearch.SelectionStatistic, configuredCH, configuredCCH, configuredALT bool) (maxsearch.SolverSelection, error) {
+func selectFromBenchmark(path, expectedFingerprint string, queries, updates int64, statistic maxsearch.SelectionStatistic, state maxsearch.PreprocessState, configuredCH, configuredCCH, configuredALT bool) (maxsearch.SolverSelection, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return maxsearch.SolverSelection{}, err
@@ -287,7 +295,6 @@ func selectFromBenchmark(path string, g *graph.Graph, queries, updates int64, st
 	if strings.TrimSpace(summary.GraphFingerprint) == "" {
 		return maxsearch.SolverSelection{}, errors.New("benchmark is not bound to a graph fingerprint; regenerate it with aegis-max-road-bench.sh")
 	}
-	expectedFingerprint := maxsearch.RoutingKitGraphFingerprint(g)
 	if summary.GraphFingerprint != expectedFingerprint {
 		return maxsearch.SolverSelection{}, fmt.Errorf("benchmark graph fingerprint mismatch: benchmark=%s aegis=%s", summary.GraphFingerprint, expectedFingerprint)
 	}
@@ -308,14 +315,50 @@ func selectFromBenchmark(path string, g *graph.Graph, queries, updates int64, st
 		profiles = append(profiles, maxsearch.SolverProfile{
 			Algorithm: row.Algorithm,
 			QueryNS: row.MeanNS, QueryP95NS: row.P95NS, QueryP99NS: row.P99NS,
-			PreprocessNS: row.PreprocessNS, UpdateNS: row.UpdateNS,
+			PreprocessNS: row.PreprocessNS, WarmPreprocessNS: row.WarmPreprocessNS, UpdateNS: row.UpdateNS,
 		})
 	}
 	return maxsearch.SelectSolverByStatistic(
 		profiles,
-		maxsearch.WorkloadHorizon{Queries: queries, MetricUpdates: updates},
+		maxsearch.WorkloadHorizon{Queries: queries, MetricUpdates: updates, PreprocessState: state},
 		statistic,
 	)
+}
+
+func resolvePreprocessState(requested string, configuredCH bool, chGraphPath, fingerprint string) maxsearch.PreprocessState {
+	switch requested {
+	case string(maxsearch.PreprocessWarm):
+		return maxsearch.PreprocessWarm
+	case string(maxsearch.PreprocessCold):
+		return maxsearch.PreprocessCold
+	case "auto":
+		if configuredCH && routingKitCHCacheReady(chGraphPath, fingerprint) {
+			return maxsearch.PreprocessWarm
+		}
+		return maxsearch.PreprocessCold
+	default:
+		return maxsearch.PreprocessCold
+	}
+}
+
+func routingKitCHCacheReady(graphPath, fingerprint string) bool {
+	if strings.TrimSpace(graphPath) == "" || strings.TrimSpace(fingerprint) == "" {
+		return false
+	}
+	indexInfo, err := os.Stat(graphPath + ".ch-index")
+	if err != nil || !indexInfo.Mode().IsRegular() || indexInfo.Size() < 1 {
+		return false
+	}
+	data, err := os.ReadFile(graphPath + ".ch-index.meta")
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) != 3 || fields[0] != "AEGIS_ROUTINGKIT_CH_CACHE_V1" || fields[1] != fingerprint {
+		return false
+	}
+	rebuildNS, err := strconv.ParseInt(fields[2], 10, 64)
+	return err == nil && rebuildNS > 0
 }
 
 func readQueries(path string) ([]maxsearch.BatchQuery, error) {
