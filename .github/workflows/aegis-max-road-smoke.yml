@@ -52,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/aegis-max-road-bench.sh andorra 120 time 8 "$RUNNER_TEMP/road-smoke"
-      - name: Exercise adaptive persistent batch selection
+      - name: Exercise cold and auto-warm adaptive batches
         shell: bash
         run: |
           set -euo pipefail
@@ -70,21 +70,30 @@ jobs:
           "$BIN/aegis-max-batch" "${common[@]}" --metric-updates 4 --selection-stat mean > "$OUT/auto-mean-updates.json"
           "$BIN/aegis-max-batch" "${common[@]}" --metric-updates 0 --selection-stat p95 > "$OUT/auto-p95-static.json"
           "$BIN/aegis-max-batch" "${common[@]}" --metric-updates 0 --selection-stat p99 > "$OUT/auto-p99-static.json"
-          cp "$OUT/auto-mean-static.json" "$OUT/auto-static.json"
-          cp "$OUT/auto-mean-updates.json" "$OUT/auto-updates.json"
+          "$BIN/aegis-max-batch" "${common[@]}" --metric-updates 0 --selection-stat mean --preprocess-state cold > "$OUT/forced-cold-mean-static.json"
           python3 - \
             "$OUT/auto-mean-static.json" "$OUT/auto-mean-updates.json" \
-            "$OUT/auto-p95-static.json" "$OUT/auto-p99-static.json" <<'PY'
+            "$OUT/auto-p95-static.json" "$OUT/auto-p99-static.json" \
+            "$OUT/forced-cold-mean-static.json" <<'PY'
           import json, sys
-          expected_stats = ['mean', 'mean', 'p95', 'p99']
-          for path, expected_stat in zip(sys.argv[1:], expected_stats):
+          expected = [
+              ('mean', 'warm'), ('mean', 'warm'),
+              ('p95', 'warm'), ('p99', 'warm'),
+              ('mean', 'cold'),
+          ]
+          for path, (expected_stat, expected_state) in zip(sys.argv[1:], expected):
               d = json.load(open(path, encoding='utf-8'))
               selected = d['selection']['selected']
               assert d['selection']['statistic'] == expected_stat
+              assert d['selection']['horizon']['preprocessState'] == expected_state
               assert d['report']['summary']['primary'] == selected
               assert d['report']['summary']['queries'] == 120
               assert d['report']['summary']['primaryWins'] == 120
-              print(path, expected_stat, 'selected', selected)
+              if selected == 'routingkit-ch':
+                  assert d['routingKitCH']['cacheHit'] is True
+                  assert d['routingKitCH']['preprocessNs'] > 0
+                  assert d['routingKitCH']['rebuildNs'] > d['routingKitCH']['preprocessNs']
+              print(path, expected_stat, expected_state, 'selected', selected)
           PY
       - name: Reject mismatched benchmark identity
         shell: bash
@@ -118,34 +127,51 @@ jobs:
             "$RUNNER_TEMP/road-smoke/auto-mean-updates.json" \
             "$RUNNER_TEMP/road-smoke/auto-p95-static.json" \
             "$RUNNER_TEMP/road-smoke/auto-p99-static.json" \
+            "$RUNNER_TEMP/road-smoke/selection-mean-cold-static.json" \
+            "$RUNNER_TEMP/road-smoke/selection-mean-warm-static.json" \
             "$GITHUB_STEP_SUMMARY" <<'PY'
           import json, sys
-          src, mean_static_p, mean_updates_p, p95_p, p99_p, summary = sys.argv[1:]
+          src, mean_static_p, mean_updates_p, p95_p, p99_p, cold_sel_p, warm_sel_p, summary = sys.argv[1:]
           d = json.load(open(src, encoding='utf-8'))
           mean_static = json.load(open(mean_static_p, encoding='utf-8'))
           mean_updates = json.load(open(mean_updates_p, encoding='utf-8'))
           p95 = json.load(open(p95_p, encoding='utf-8'))
           p99 = json.load(open(p99_p, encoding='utf-8'))
+          cold_sel = json.load(open(cold_sel_p, encoding='utf-8'))
+          warm_sel = json.load(open(warm_sel_p, encoding='utf-8'))
           assert d['allCorrect'] is True
           assert d['queries'] == 120
           assert len(d['graphFingerprint']) == 64
+          ch = next(r for r in d['rankingByQueryMean'] if r['algorithm'] == 'routingkit-ch')
+          assert ch['preprocessNs'] > 0
+          assert ch['warmPreprocessNs'] > 0
+          assert ch['rebuildNs'] == ch['updateNs']
+          assert ch['cacheIndexBytes'] > 0
+          assert ch['warmPreprocessNs'] < ch['preprocessNs']
           for stat, path in [('mean', mean_static), ('p95', p95), ('p99', p99)]:
               assert path['selection']['statistic'] == stat
+              assert path['selection']['horizon']['preprocessState'] == 'warm'
+          assert cold_sel['horizon']['preprocessState'] == 'cold'
+          assert warm_sel['horizon']['preprocessState'] == 'warm'
           names = {r['algorithm'] for r in d['rankingByQueryMean']}
           required = {'dijkstra','bidijkstra','astar','aegis','routingkit-ch','routingkit-cch','alt'}
           assert required <= names, (required - names)
+          ms = lambda n: f"{n/1e6:.6f} ms"
           with open(summary, 'a', encoding='utf-8') as out:
               out.write(f"## Aegis Max Andorra smoke\n\n{d['nodes']:,} nodes · {d['edges']:,} edges · {d['queries']} identical queries · all correct: **true**\n\n")
               out.write(
-                  'adaptive: '
+                  f"CH cold **{ms(ch['preprocessNs'])}** → warm **{ms(ch['warmPreprocessNs'])}** · "
+                  f"index **{ch['cacheIndexBytes']/1048576:.2f} MiB**\n\n"
+              )
+              out.write(
+                  'auto/warm adaptive: '
                   f"mean/static **{mean_static['selection']['selected']}** · "
                   f"mean/4 updates **{mean_updates['selection']['selected']}** · "
                   f"p95/static **{p95['selection']['selected']}** · "
                   f"p99/static **{p99['selection']['selected']}**\n\n"
               )
-              out.write('| algorithm | mean | p50 | p95 | p99 | preprocess | update | amortized mean |\n|---|---:|---:|---:|---:|---:|---:|---:|\n')
+              out.write('| algorithm | mean | p50 | p95 | p99 | cold preprocess | warm preprocess | update |\n|---|---:|---:|---:|---:|---:|---:|---:|\n')
               for r in d['rankingByQueryMean']:
-                  ms = lambda n: f"{n/1e6:.6f} ms"
-                  out.write(f"| {r['algorithm']} | {ms(r['meanNs'])} | {ms(r['p50Ns'])} | {ms(r['p95Ns'])} | {ms(r['p99Ns'])} | {ms(r['preprocessNs'])} | {ms(r['updateNs'])} | {ms(r['amortizedMeanNs'])} |\n")
+                  out.write(f"| {r['algorithm']} | {ms(r['meanNs'])} | {ms(r['p50Ns'])} | {ms(r['p95Ns'])} | {ms(r['p99Ns'])} | {ms(r['preprocessNs'])} | {ms(r.get('warmPreprocessNs',0))} | {ms(r['updateNs'])} |\n")
           print(json.dumps(d, indent=2, sort_keys=True))
           PY
