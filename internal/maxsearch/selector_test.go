@@ -20,8 +20,8 @@ func TestSelectSolverAmortizesCH(t *testing.T) {
 	if short.Selected != search.Aegis {
 		t.Fatalf("short workload selected %q, want aegis", short.Selected)
 	}
-	if short.Statistic != SelectionMean {
-		t.Fatalf("default statistic = %q, want mean", short.Statistic)
+	if short.Statistic != SelectionMean || short.Horizon.PreprocessState != PreprocessCold {
+		t.Fatalf("default selection = statistic %q state %q, want mean/cold", short.Statistic, short.Horizon.PreprocessState)
 	}
 
 	long, err := SelectSolver(profiles, WorkloadHorizon{Queries: 120})
@@ -45,6 +45,46 @@ func TestSelectSolverAccountsForUpdates(t *testing.T) {
 	}
 	if selection.Selected != RoutingKitCCH {
 		t.Fatalf("update-heavy workload selected %q, want routingkit-cch", selection.Selected)
+	}
+}
+
+func TestSelectSolverWarmStateCanChangeWinner(t *testing.T) {
+	profiles := []SolverProfile{
+		{Algorithm: search.Aegis, QueryNS: 20},
+		{Algorithm: RoutingKitCH, QueryNS: 10, PreprocessNS: 1000, WarmPreprocessNS: 1, UpdateNS: 1000},
+	}
+
+	cold, err := SelectSolver(profiles, WorkloadHorizon{Queries: 10, PreprocessState: PreprocessCold})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cold.Selected != search.Aegis {
+		t.Fatalf("cold workload selected %q, want aegis", cold.Selected)
+	}
+
+	warm, err := SelectSolver(profiles, WorkloadHorizon{Queries: 10, PreprocessState: PreprocessWarm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warm.Selected != RoutingKitCH {
+		t.Fatalf("warm workload selected %q, want routingkit-ch", warm.Selected)
+	}
+	if warm.Ranking[0].PreprocessNS != 1 || warm.Ranking[0].ColdPreprocessNS != 1000 {
+		t.Fatalf("warm CH costs = preprocess %d cold %d, want 1/1000", warm.Ranking[0].PreprocessNS, warm.Ranking[0].ColdPreprocessNS)
+	}
+}
+
+func TestSelectSolverWarmStateFallsBackToColdEvidence(t *testing.T) {
+	profiles := []SolverProfile{
+		{Algorithm: search.Aegis, QueryNS: 20},
+		{Algorithm: RoutingKitCCH, QueryNS: 10, PreprocessNS: 1000},
+	}
+	selection, err := SelectSolver(profiles, WorkloadHorizon{Queries: 10, PreprocessState: PreprocessWarm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Selected != search.Aegis {
+		t.Fatalf("missing warm evidence selected %q, want conservative aegis", selection.Selected)
 	}
 }
 
@@ -88,6 +128,16 @@ func TestSelectSolverTailStatisticRequiresEvidence(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected error when p95 evidence is missing")
+	}
+}
+
+func TestSelectSolverRejectsInvalidPreprocessState(t *testing.T) {
+	_, err := SelectSolver(
+		[]SolverProfile{{Algorithm: search.Aegis, QueryNS: 1}},
+		WorkloadHorizon{Queries: 1, PreprocessState: "mystery"},
+	)
+	if err == nil {
+		t.Fatal("expected error for invalid preprocess state")
 	}
 }
 
