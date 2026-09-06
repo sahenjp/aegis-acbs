@@ -18,12 +18,13 @@ type benchmarkSummary struct {
 }
 
 type benchmarkRow struct {
-	Algorithm    search.Algorithm `json:"algorithm"`
-	MeanNS       int64            `json:"meanNs"`
-	P95NS        int64            `json:"p95Ns"`
-	P99NS        int64            `json:"p99Ns"`
-	PreprocessNS int64            `json:"preprocessNs"`
-	UpdateNS     int64            `json:"updateNs"`
+	Algorithm        search.Algorithm `json:"algorithm"`
+	MeanNS           int64            `json:"meanNs"`
+	P95NS            int64            `json:"p95Ns"`
+	P99NS            int64            `json:"p99Ns"`
+	PreprocessNS     int64            `json:"preprocessNs"`
+	WarmPreprocessNS int64            `json:"warmPreprocessNs"`
+	UpdateNS         int64            `json:"updateNs"`
 }
 
 type output struct {
@@ -37,6 +38,7 @@ func main() {
 	queries := flag.Int64("queries", 0, "expected number of queries before the horizon ends")
 	updates := flag.Int64("metric-updates", 0, "expected edge-weight/metric updates during the horizon")
 	statistic := flag.String("selection-stat", "mean", "per-query statistic used by adaptive selection: mean, p95, or p99")
+	preprocessState := flag.String("preprocess-state", "cold", "preprocessing state used by adaptive selection: cold or warm")
 	flag.Parse()
 	if *input == "" || *queries <= 0 {
 		flag.Usage()
@@ -57,17 +59,17 @@ func main() {
 
 	profiles := make([]maxsearch.SolverProfile, 0, len(summary.RankingByQueryMean))
 	for _, row := range summary.RankingByQueryMean {
-		if row.MeanNS < 0 || row.P95NS < 0 || row.P99NS < 0 || row.PreprocessNS < 0 || row.UpdateNS < 0 {
+		if row.MeanNS < 0 || row.P95NS < 0 || row.P99NS < 0 || row.PreprocessNS < 0 || row.WarmPreprocessNS < 0 || row.UpdateNS < 0 {
 			fatal(fmt.Errorf("invalid timing for %q", row.Algorithm))
 		}
 		profiles = append(profiles, maxsearch.SolverProfile{
 			Algorithm: row.Algorithm,
 			QueryNS: row.MeanNS, QueryP95NS: row.P95NS, QueryP99NS: row.P99NS,
-			PreprocessNS: row.PreprocessNS, UpdateNS: row.UpdateNS,
+			PreprocessNS: row.PreprocessNS, WarmPreprocessNS: row.WarmPreprocessNS, UpdateNS: row.UpdateNS,
 		})
 	}
 	selection, err := maxsearch.SelectSolverByStatistic(profiles, maxsearch.WorkloadHorizon{
-		Queries: *queries, MetricUpdates: *updates,
+		Queries: *queries, MetricUpdates: *updates, PreprocessState: maxsearch.PreprocessState(*preprocessState),
 	}, maxsearch.SelectionStatistic(*statistic))
 	if err != nil {
 		fatal(err)
