@@ -1,0 +1,120 @@
+name: Aegis Max Large Road Bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: Large road dataset
+        required: true
+        default: kanto
+        type: choice
+        options:
+          - kanto
+          - japan
+      queries:
+        description: Deterministic identical query count
+        required: true
+        default: '1000'
+        type: string
+      metric:
+        description: Edge metric
+        required: true
+        default: time
+        type: choice
+        options:
+          - time
+          - distance
+      alt_landmarks:
+        description: Directed ALT landmark count
+        required: true
+        default: '8'
+        type: choice
+        options:
+          - '4'
+          - '8'
+          - '16'
+      runner:
+        description: Japan is recommended on a large self-hosted runner
+        required: true
+        default: ubuntu-24.04
+        type: choice
+        options:
+          - ubuntu-24.04
+          - self-hosted
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aegis-max-large-road-${{ inputs.dataset }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Validate inputs
+        shell: bash
+        env:
+          QUERIES: ${{ inputs.queries }}
+        run: |
+          set -euo pipefail
+          [[ "$QUERIES" =~ ^[1-9][0-9]*$ ]] || { echo 'queries must be a positive integer' >&2; exit 2; }
+          (( QUERIES <= 100000 )) || { echo 'queries is capped at 100000' >&2; exit 2; }
+          if [[ "${{ inputs.dataset }}" == japan && "${{ inputs.runner }}" != self-hosted ]]; then
+            echo 'warning: Japan can exceed hosted-runner memory/disk during preprocessing' >&2
+          fi
+      - name: Install native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ zlib1g-dev osmium-tool curl
+      - name: Run identical-query exact benchmark
+        shell: bash
+        env:
+          AEGIS_BENCH_MAKE_JOBS: '2'
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/large-road-bench"
+          bash scripts/aegis-max-road-bench.sh \
+            "${{ inputs.dataset }}" "${{ inputs.queries }}" "${{ inputs.metric }}" \
+            "${{ inputs.alt_landmarks }}" "$OUT"
+      - name: Assert evidence and summarize
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/large-road-bench"
+          python3 - "$OUT/summary.json" "$OUT/selection-static.json" "$OUT/selection-updates.json" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          summary_p, static_p, updates_p, dst = sys.argv[1:]
+          d = json.load(open(summary_p, encoding='utf-8'))
+          static = json.load(open(static_p, encoding='utf-8'))
+          updates = json.load(open(updates_p, encoding='utf-8'))
+          assert d['allCorrect'] is True
+          required = {'dijkstra','bidijkstra','astar','aegis','routingkit-ch','routingkit-cch','alt'}
+          assert required <= {r['algorithm'] for r in d['rankingByQueryMean']}
+          with open(dst, 'a', encoding='utf-8') as out:
+              out.write(f"## {d['dataset'].title()} / {d['metric']} — {d['queries']} identical exact queries\n\n")
+              out.write(f"{d['nodes']:,} nodes · {d['edges']:,} edges · all correct: **true**\n\n")
+              out.write(f"adaptive selection: static **{static['selected']}** · 4 metric updates **{updates['selected']}**\n\n")
+              out.write('| algorithm | mean | p95 | preprocess | update | amortized mean |\n|---|---:|---:|---:|---:|---:|\n')
+              for r in d['rankingByQueryMean']:
+                  ms = lambda n: f"{n/1e6:.6f} ms"
+                  out.write(f"| {r['algorithm']} | {ms(r['meanNs'])} | {ms(r['p95Ns'])} | {ms(r['preprocessNs'])} | {ms(r['updateNs'])} | {ms(r['amortizedMeanNs'])} |\n")
+          PY
+      - name: Upload benchmark evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: aegis-max-${{ inputs.dataset }}-${{ inputs.metric }}-${{ inputs.queries }}q
+          path: ${{ runner.temp }}/large-road-bench/
+          if-no-files-found: error
+          retention-days: 30
