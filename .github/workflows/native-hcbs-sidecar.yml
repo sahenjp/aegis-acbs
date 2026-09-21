@@ -1,0 +1,122 @@
+name: Native Go HCBS sidecar evaluation
+
+on:
+  pull_request:
+    paths:
+      - 'internal/search/hcbs_index.go'
+      - 'internal/search/hcbs_index_test.go'
+      - 'scripts/export_hcbs_sidecar_input.go'
+      - 'scripts/build_hcbs_sidecar.cpp'
+      - 'scripts/hcbs_native_bench.go'
+      - '.github/workflows/native-hcbs-sidecar.yml'
+
+concurrency:
+  group: native-hcbs-sidecar-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - run: go test ./...
+      - run: go vet ./...
+      - run: go test -race ./internal/search -run HCBSIndex
+      - run: go run -tags hcbssidecar scripts/export_hcbs_sidecar_input.go -h >/dev/null
+      - run: go run -tags hcbsnativebench scripts/hcbs_native_bench.go -h >/dev/null
+
+  road:
+    strategy:
+      fail-fast: false
+      matrix:
+        region: [andorra, bremen, tokyo]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Build pinned RoutingKit sidecar builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zlib1g-dev g++ osmium-tool
+          git clone https://github.com/RoutingKit/RoutingKit.git "$RUNNER_TEMP/RoutingKit"
+          git -C "$RUNNER_TEMP/RoutingKit" checkout 54d49bb0cdea56dde182357522e4e86a03c57852
+          make -C "$RUNNER_TEMP/RoutingKit" -j2
+          g++ -O3 -DNDEBUG -std=c++17 -march=native \
+            -I"$RUNNER_TEMP/RoutingKit/include" \
+            scripts/build_hcbs_sidecar.cpp \
+            -L"$RUNNER_TEMP/RoutingKit/lib" -lroutingkit \
+            -lz -fopenmp -pthread -lm \
+            -o "$RUNNER_TEMP/build_hcbs_sidecar"
+          go build -o "$RUNNER_TEMP/aegis" ./cmd/aegis
+      - name: Download and import graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          case '${{ matrix.region }}' in
+            andorra)
+              curl -fL --retry 6 --retry-all-errors --retry-delay 2 https://download.geofabrik.de/europe/andorra-latest.osm.pbf -o "$RUNNER_TEMP/input.osm.pbf"
+              ;;
+            bremen)
+              curl -fL --retry 6 --retry-all-errors --retry-delay 2 https://download.geofabrik.de/europe/germany/bremen-latest.osm.pbf -o "$RUNNER_TEMP/input.osm.pbf"
+              ;;
+            tokyo)
+              curl -fL --retry 6 --retry-all-errors --retry-delay 2 https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf -o "$RUNNER_TEMP/kanto.osm.pbf"
+              osmium extract --bbox 139.45,35.45,140.05,35.90 --strategy complete_ways --overwrite --output "$RUNNER_TEMP/input.osm.pbf" "$RUNNER_TEMP/kanto.osm.pbf"
+              ;;
+          esac
+          osmium cat "$RUNNER_TEMP/input.osm.pbf" -o "$RUNNER_TEMP/input.osm" --overwrite
+          /usr/bin/time -v -o "$RUNNER_TEMP/import.time" \
+            "$RUNNER_TEMP/aegis" import-osm \
+              --input "$RUNNER_TEMP/input.osm" \
+              --output "$RUNNER_TEMP/road-time.aegis" \
+              --profile car --metric time
+      - name: Build fingerprinted hierarchy sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          go run -tags hcbssidecar scripts/export_hcbs_sidecar_input.go \
+            --graph "$RUNNER_TEMP/road-time.aegis" \
+            --output "$RUNNER_TEMP/hcbs-input.txt"
+          /usr/bin/time -v -o "$RUNNER_TEMP/sidecar-build.time" \
+            env LD_LIBRARY_PATH="$RUNNER_TEMP/RoutingKit/lib" \
+            "$RUNNER_TEMP/build_hcbs_sidecar" \
+              "$RUNNER_TEMP/hcbs-input.txt" "$RUNNER_TEMP/road-time.hcbs"
+          sha256sum "$RUNNER_TEMP/input.osm.pbf" "$RUNNER_TEMP/road-time.aegis" "$RUNNER_TEMP/road-time.hcbs" > "$RUNNER_TEMP/sha256.txt"
+          ls -lh "$RUNNER_TEMP/road-time.aegis" "$RUNNER_TEMP/road-time.hcbs"
+      - name: Run native Go query engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify=500
+          if [ '${{ matrix.region }}' = andorra ]; then verify=1000; fi
+          if [ '${{ matrix.region }}' = tokyo ]; then verify=200; fi
+          mkdir -p "artifacts/native-hcbs-${{ matrix.region }}"
+          /usr/bin/time -v -o "artifacts/native-hcbs-${{ matrix.region }}/query.time" \
+            go run -tags hcbsnativebench scripts/hcbs_native_bench.go \
+              --graph "$RUNNER_TEMP/road-time.aegis" \
+              --sidecar "$RUNNER_TEMP/road-time.hcbs" \
+              --queries 10000 --repeats 31 --verify "$verify" --seed 424242 \
+              | tee "artifacts/native-hcbs-${{ matrix.region }}/result.txt"
+          grep -q "dijkstra_verified=$verify" "artifacts/native-hcbs-${{ matrix.region }}/result.txt"
+          cp "$RUNNER_TEMP/import.time" "$RUNNER_TEMP/sidecar-build.time" "$RUNNER_TEMP/sha256.txt" "artifacts/native-hcbs-${{ matrix.region }}/"
+          stat -c 'graph_bytes=%s' "$RUNNER_TEMP/road-time.aegis" >> "artifacts/native-hcbs-${{ matrix.region }}/sizes.txt"
+          stat -c 'sidecar_bytes=%s' "$RUNNER_TEMP/road-time.hcbs" >> "artifacts/native-hcbs-${{ matrix.region }}/sizes.txt"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: native-hcbs-${{ matrix.region }}
+          path: artifacts/native-hcbs-${{ matrix.region }}
+          if-no-files-found: error
