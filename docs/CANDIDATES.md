@@ -309,6 +309,79 @@ that terminates early.
   geometry and road hierarchy differ, or to graphs with turn restrictions,
   which this import does not model.
 
+## Second city: Osaka
+
+A single city cannot show whether a result generalises, so the same procedure
+was repeated on Osaka. The Kansai extract was restricted to a box around central
+Osaka and imported with the same `car` profile. The network is smaller than
+Tokyo's, at 748,903 nodes and 1,575,615 directed edges, and its heuristic
+strengths land close to Tokyo's, which makes the comparison clean: 1.0000 on
+distance and 0.2786 on travel time, against 0.9999 and 0.2505 for Tokyo.
+
+### Distance
+
+| Algorithm | median | p95 | vs Dijkstra | median expanded | correct |
+|---|---:|---:|---:|---:|---:|
+| Dijkstra | 50.65 ms | 119.15 ms | 1.00x | 373,981 | 300/300 |
+| bidirectional Dijkstra | 33.71 ms | 87.97 ms | 1.50x | 234,918 | 300/300 |
+| A* | 13.70 ms | 87.83 ms | 3.70x | 57,780 | 300/300 |
+| ACBS | **7.69 ms** | **48.52 ms** | **6.59x** | 34,137 | 300/300 |
+
+Pairwise, ACBS finished ahead of bidirectional Dijkstra on 288 of 300 queries and
+ahead of A* on 265 of 300.
+
+### Travel time
+
+| Algorithm | median | p95 | vs Dijkstra | median expanded | correct |
+|---|---:|---:|---:|---:|---:|
+| Dijkstra | 56.53 ms | 120.43 ms | 1.00x | 362,323 | 300/300 |
+| bidirectional Dijkstra | 25.68 ms | 80.22 ms | 2.20x | 183,213 | 300/300 |
+| A* | 41.51 ms | 171.00 ms | 1.36x | 166,990 | 300/300 |
+| ACBS | **16.70 ms** | **85.95 ms** | **3.39x** | 84,249 | 300/300 |
+
+Pairwise, ACBS finished ahead of bidirectional Dijkstra on 223 of 300 queries and
+ahead of A* on 292 of 300.
+
+### Both cities together
+
+| City | Metric | heuristicStrength | ACBS vs bidirectional Dijkstra | pairwise |
+|---|---|---:|---:|---:|
+| Tokyo | distance | 0.9999 | 8.64x | 390 of 400 |
+| Osaka | distance | 1.0000 | 6.59x | 288 of 300 |
+| Tokyo | travel time | 0.2505 | 3.46x | 252 of 300 |
+| Osaka | travel time | 0.2786 | 3.39x | 223 of 300 |
+
+The pattern holds across both cities. On distance the gain is large and grows
+with network size. On travel time it is roughly a third as large and nearly
+identical in both cities, 3.46x and 3.39x, which suggests the size of the gain
+on a weak heuristic is governed by the metric rather than by the particular
+city. Every run returned exact shortest paths.
+
+### Turn restrictions
+
+The import reads OSM nodes and ways and ignores relations, so turn
+restrictions are not modelled. That makes these graphs more permissive than
+reality, which is worth quantifying rather than assuming.
+
+Counting the `type=restriction` relations whose members fall inside the Tokyo
+box gives 2,089 restrictions: 721 `no_right_turn`, 325 `only_straight_on`, 269
+`no_left_turn`, 190 `no_u_turn`, and the remainder split across the other
+types. Spread over 2,262,568 directed edges that is 0.092 percent, about one
+restriction per 1,083 edges, distributed across roughly 1,570 junction nodes out
+of 1.1 million.
+
+Modelling turns properly would mean expanding each directed edge into a node,
+which takes the Tokyo graph from 1,098,173 nodes to 2,262,568 with about 4.66
+million transitions, and roughly doubles the search workspace. That is viable
+for a build-once, query-many harness but not as a drop-in replacement, because
+the resulting numbers would not be comparable with the ones above and it would
+change the successor branching the scheduler was tuned against.
+
+Because the restriction set is small, spread thin and neutral with respect to
+which algorithm an edge removal favours, it is unlikely to change the ranking.
+The honest caveat is different: absolute distances here are optimistic, so these
+graphs are a performance test bed and not a validation of routing correctness.
+
 ## Reproducing these measurements
 
 The grid graphs come from `scripts/gen`. The Tokyo graph is not distributed
