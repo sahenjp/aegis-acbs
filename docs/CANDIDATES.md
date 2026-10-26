@@ -225,6 +225,16 @@ stronger heuristic never causes extra node expansions, and they show that MM is
 not well-behaved. That is the mechanism behind the results in this document. A
 comparison that holds on one graph says little about another.
 
+Wang et al. report the size of that effect in their own experiments. In
+*Bidirectional Search while Ensuring Meet-In-The-Middle via Effective and
+Efficient-to-Compute Termination Conditions* (IJCAI 2025) they measure their MEET
+algorithm on two grid maps, and note that on the second map the heuristics are
+often less informative. There the runtime is roughly on par with A* on the first
+map and about twice as slow on the second. The direction matches what this
+document finds: weaker bound, smaller gain. Their experiments use grid maps and
+the Pancake puzzle rather than road networks, and the measurements in this
+document are on real OpenStreetMap data.
+
 ### What may and may not be claimed
 
 - May be claimed: on this real road network, with distance as the cost and the
