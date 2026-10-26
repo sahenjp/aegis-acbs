@@ -105,51 +105,73 @@ Two caveats that must accompany any comparison:
 
 ## The 1M question: is ACBS's large-graph win real?
 
-A single measurement suggested ACBS was the fastest algorithm at 1M nodes
-(29.56 ms against bidirectional Dijkstra's 33.64 ms). That was re-measured and
-stress-tested independently, because one run is not evidence.
+A single measurement suggested ACBS was the fastest algorithm at 1M nodes. It
+was re-measured independently, and the answer is **no — ACBS is not fastest, and
+the apparent win was not an ACBS effect at all.**
 
-The rerun reproduced it across three seeds on the uniform lattice
-(`grid-1m`, 1,000,000 nodes, 2,596,627 edges, 200 queries, 5 repeats,
-interleaved), all queries correct 200/200:
+### The median was misleading
 
-| Seed | Dijkstra | bidirectional Dijkstra | ACBS | ACBS vs bidirectional |
-|---|---:|---:|---:|---:|
-| 424242 | 60.82 ms | 29.57 ms | 18.49 ms | 1.60x |
-| 1010 | 71.31 ms | 40.93 ms | 27.11 ms | 1.51x |
-| 7 | 75.92 ms | 40.68 ms | 30.49 ms | 1.33x |
+The rerun covered three seeds on the uniform lattice (`grid-1m`, 1,000,000
+nodes, 2,596,627 edges, 200 queries, 5 repeats, interleaved). The ranking by
+median was identical on all three seeds, which is where the earlier claim came
+from. But a paired comparison of the same queries shows the opposite:
 
-The win is real **on that graph**. But the lattice has
-`heuristicStrength = 0.996`, meaning the geographic lower bound is nearly exact.
-Real road networks do not have that property, so the same 1M topology was
-re-weighted to weaken the heuristic while keeping every other parameter fixed:
-
-| Graph | heuristicStrength | Dijkstra | bidirectional Dijkstra | ACBS | ACBS vs bidirectional |
+| Seed | Dijkstra | bidirectional Dijkstra | ACBS | paired ACBS/bidirectional | ACBS wins / loses |
 |---|---:|---:|---:|---:|---:|
-| grid-1m | 0.996 | 71.31 ms | 40.93 ms | 27.11 ms | **1.51x** |
-| weak-b100s165 | 0.434 | 69.47 ms | 35.51 ms | 32.88 ms | 1.08x |
-| weak-b100s230 | 0.311 | 67.35 ms | 35.46 ms | 35.13 ms | 1.01x |
-| weak-b110s260 | 0.264 | 67.73 ms | 36.44 ms | 36.51 ms | 1.00x |
-| weak-b115s310 | 0.202 | 67.73 ms | 35.27 ms | 38.75 ms | **0.91x** |
-| weak-b125s450 | 0.096 | 67.39 ms | 36.01 ms | 43.32 ms | **0.83x** |
+| 424242 | 60.82 ms | 29.57 ms | 18.49 ms | **1.001** | 72 / 114 |
+| 1010 | 71.31 ms | 40.93 ms | 27.11 ms | 0.911 | 80 / 109 |
+| 7 | 75.92 ms | 40.68 ms | 30.49 ms | 1.029 | 59 / 123 |
 
-**The advantage is a property of the heuristic, not of the algorithm.** It falls
-monotonically to parity near heuristic strength 0.26 and becomes a loss as the
-bound weakens further. A* degrades in the same direction and much more steeply
-(24.9 ms at 0.996, 99.2 ms at 0.096).
+ACBS loses more queries than it wins on **every** seed. The good median comes
+from a heavy tail that the median hides: p95 is 145-165 ms for ACBS against
+98-112 ms for bidirectional Dijkstra. A tail is what a routing service actually
+feels, so the median is the wrong headline.
 
-All runs were 200/200 correct. Verified by an independent agent in an isolated
-copy of the repository, with host load recorded.
+### The advantage belonged to the geographic bound, not to ACBS
+
+`aegis-static` disables the scheduler and keeps the heuristic. It trails full
+ACBS by only 1.5-2.5 ms on every graph, and the paired ACBS/aegis-static ratio is
+0.94-0.96 throughout. Whatever advantage exists comes from the A* geographic
+lower bound, which `astar` also uses. **It is not a property of the ACBS
+scheduler.**
+
+### It decays monotonically and reverses
+
+The same 1M topology was re-weighted to weaken the heuristic while holding node
+count, edge count and shape fixed:
+
+| Graph | heuristicStrength | paired ACBS/bidirectional | result |
+|---|---:|---:|---|
+| grid-1m | 0.996 | 1.001 | tied |
+| weak-b100s165 | 0.434 | 1.148 | bidirectional wins |
+| weak-b100s230 | 0.311 | 1.226 | bidirectional wins |
+| weak-b110s260 | 0.264 | 1.252 | bidirectional wins |
+| weak-b115s310 | 0.202 | 1.283 | bidirectional wins |
+| weak-b125s450 | 0.096 | 1.352 | bidirectional wins 194/200 queries |
+
+The mechanism is visible in the expansion counts: ACBS expands 114k nodes on the
+lattice against bidirectional Dijkstra's 268k, but at strength 0.096 it expands
+241k. The pruning advantage disappears while the constant factors stay worse.
+
+Distance-metric road graphs sit around heuristicStrength 0.25-0.45, which is
+squarely inside the losing band.
 
 ### What may and may not be claimed
 
-- May be claimed: on uniform grid graphs with a near-exact geographic lower
-  bound, ACBS expands fewer nodes than bidirectional Dijkstra and finishes
-  sooner at 1M nodes.
-- May **not** be claimed: that ACBS is faster than existing methods in general,
-  or on real road networks. The crossover point has not been located, and no
-  real-world graph has been measured. Every large graph here is synthetic.
+- May be claimed: on lattice-like distance graphs where the geographic lower
+  bound is near-exact, A* using that bound expands far fewer nodes than
+  bidirectional Dijkstra.
+- May **not** be claimed: that ACBS is the fastest exact algorithm at 1M nodes,
+  or that it beats bidirectional Dijkstra in general. On paired queries it loses,
+  and on realistic heuristic strengths it loses clearly.
+- May **not** be claimed: that the ACBS scheduler contributes the advantage. The
+  ablation shows it contributes almost nothing; the heuristic does.
+
+All runs were 200/200 correct (11 reports x 5 algorithms x 200 queries, 0 errors).
+The decisive run was repeated under a clean host load and reached the same
+conclusion.
 
 This is exactly the kind of scale-dependent result that the v1.0.0 gate in
-`docs/RELEASE_PLAN.md` requires independent reproduction to settle.
-
+`docs/RELEASE_PLAN.md` requires independent reproduction to settle, and it is a
+concrete example of why a single measurement and a single statistic are not
+enough.
