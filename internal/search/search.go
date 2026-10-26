@@ -27,6 +27,9 @@ const (
 	AegisProjection   Algorithm = "aegis-projection"
 	Portfolio         Algorithm = "portfolio"
 	AegisRace         Algorithm = "aegis-race"
+	// PB is the Pareto-Buckets exact bidirectional Dijkstra (balanced radix
+	// bucket selection over both frontiers). Exposed for benchmark evaluation.
+	PB Algorithm = "pb-buckets"
 )
 
 const policyVersion = "road-v3-time-aware"
@@ -151,6 +154,16 @@ func Run(ctx context.Context, g *graph.Graph, source, target int, alg Algorithm)
 		r.Stats.Selected = selected
 	case AegisRace:
 		r, err = race(ctx, g, source, target)
+	case PB:
+		r, err = pbSearch(ctx, g, source, target)
+	case Catch:
+		r, err = catchSearch(ctx, g, source, target)
+	case CatchAB:
+		r, err = catchAB(ctx, g, source, target)
+	case CatchR:
+		r, err = catchR(ctx, g, source, target)
+	case Meet:
+		r, err = meet(ctx, g, source, target)
 	default:
 		return Result{}, fmt.Errorf("unknown algorithm %q", alg)
 	}
