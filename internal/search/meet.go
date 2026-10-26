@@ -3,7 +3,7 @@ package search
 import (
 	"context"
 
-	"github.com/lasder-ca/aegis-acbs/internal/graph"
+	"github.com/sahenjp/aegis-acbs/internal/graph"
 )
 
 // Meet is the MEET (Meetable-Endpoints Exact Termination) algorithm: an exact

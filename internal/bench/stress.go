@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lasder-ca/aegis-acbs/internal/graph"
-	"github.com/lasder-ca/aegis-acbs/internal/search"
-	"github.com/lasder-ca/aegis-acbs/internal/version"
+	"github.com/sahenjp/aegis-acbs/internal/graph"
+	"github.com/sahenjp/aegis-acbs/internal/search"
+	"github.com/sahenjp/aegis-acbs/internal/version"
 )
 
 type StressConfig struct {

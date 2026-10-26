@@ -1,3 +1,3 @@
-module github.com/lasder-ca/aegis-acbs
+module github.com/sahenjp/aegis-acbs
 
 go 1.23

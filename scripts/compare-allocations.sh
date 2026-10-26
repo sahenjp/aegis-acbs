@@ -24,7 +24,7 @@ package search
 import (
   "context"
   "testing"
-  "github.com/lasder-ca/aegis-acbs/internal/graph"
+  "github.com/sahenjp/aegis-acbs/internal/graph"
 )
 
 func allocationComparisonGrid(b *testing.B, rows, cols int) *graph.Graph {

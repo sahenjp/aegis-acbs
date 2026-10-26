@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lasder-ca/aegis-acbs/internal/graph"
-	"github.com/lasder-ca/aegis-acbs/internal/search"
+	"github.com/sahenjp/aegis-acbs/internal/graph"
+	"github.com/sahenjp/aegis-acbs/internal/search"
 )
 
 func TestReportIncludesACBSMetricsAndHTML(t *testing.T) {

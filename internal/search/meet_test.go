@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/lasder-ca/aegis-acbs/internal/graph"
+	"github.com/sahenjp/aegis-acbs/internal/graph"
 )
 
 // checkMEETAgainstDijkstra asserts that MEET returns exactly the same distance

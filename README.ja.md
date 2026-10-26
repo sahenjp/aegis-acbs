@@ -9,7 +9,7 @@
 
 <br>
 
-[![CI](https://github.com/lasder-ca/aegis-acbs/actions/workflows/ci.yml/badge.svg)](https://github.com/lasder-ca/aegis-acbs/actions/workflows/ci.yml)
+[![CI](https://github.com/sahenjp/aegis-acbs/actions/workflows/ci.yml/badge.svg)](https://github.com/sahenjp/aegis-acbs/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go&logoColor=white)
 ![対応OS](https://img.shields.io/badge/対応OS-Linux%20%7C%20Windows%20%7C%20macOS-555)
 ![開発段階](https://img.shields.io/badge/開発段階-研究プロトタイプ-7c3aed)
@@ -79,7 +79,7 @@ flowchart LR
 必要環境はGo 1.23以降です。
 
 ```bash
-git clone https://github.com/lasder-ca/aegis-acbs.git
+git clone https://github.com/sahenjp/aegis-acbs.git
 cd aegis-acbs
 
 go test ./...

@@ -6,7 +6,7 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"github.com/lasder-ca/aegis-acbs/internal/graph"
+	"github.com/sahenjp/aegis-acbs/internal/graph"
 )
 
 // This file is owned by the independent verifier (task-6). It intentionally

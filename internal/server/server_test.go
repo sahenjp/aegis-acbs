@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/lasder-ca/aegis-acbs/internal/graph"
+	"github.com/sahenjp/aegis-acbs/internal/graph"
 )
 
 func testGraph() *graph.Graph {

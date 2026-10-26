@@ -13,7 +13,7 @@ fetch() {
   echo "[$id] $url"
   curl --fail --location --retry 5 --retry-all-errors \
     --connect-timeout 20 --max-time 600 \
-    --user-agent "AegisOneRoad/12.2.0 (+https://github.com/lasder-ca/aegis-acbs)" \
+    --user-agent "AegisOneRoad/12.2.0 (+https://github.com/sahenjp/aegis-acbs)" \
     "$url" -o "$dest.tmp"
   mv "$dest.tmp" "$dest"
   sha256sum "$dest" > "$dest.sha256"

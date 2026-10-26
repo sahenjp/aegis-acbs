@@ -8,7 +8,7 @@
 ![Input](https://img.shields.io/badge/input-untrusted-ef4444)
 ![Support](https://img.shields.io/badge/support-latest%20release-16a34a)
 
-[非公開で報告する](https://github.com/lasder-ca/aegis-acbs/security/advisories/new) · [ドキュメント一覧](docs/README.md) · [トップ](README.ja.md)
+[非公開で報告する](https://github.com/sahenjp/aegis-acbs/security/advisories/new) · [ドキュメント一覧](docs/README.md) · [トップ](README.ja.md)
 
 </div>
 
@@ -56,7 +56,7 @@ flowchart LR
 
 GitHubのPrivate Vulnerability ReportingまたはSecurity Advisoryを使用してください。
 
-**報告先:** [New security advisory](https://github.com/lasder-ca/aegis-acbs/security/advisories/new)
+**報告先:** [New security advisory](https://github.com/sahenjp/aegis-acbs/security/advisories/new)
 
 含める情報:
 
@@ -153,6 +153,6 @@ security impactを判断できない場合は、非公開報告を選んでく�
 
 <div align="center">
 
-[非公開で報告する](https://github.com/lasder-ca/aegis-acbs/security/advisories/new) · [コントリビューション](CONTRIBUTING.md) · [データ形式](docs/DATA.md)
+[非公開で報告する](https://github.com/sahenjp/aegis-acbs/security/advisories/new) · [コントリビューション](CONTRIBUTING.md) · [データ形式](docs/DATA.md)
 
 </div>

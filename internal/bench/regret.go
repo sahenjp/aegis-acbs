@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/lasder-ca/aegis-acbs/internal/search"
+	"github.com/sahenjp/aegis-acbs/internal/search"
 )
 
 type RegretConfig struct {

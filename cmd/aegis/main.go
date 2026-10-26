@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lasder-ca/aegis-acbs/internal/bench"
-	"github.com/lasder-ca/aegis-acbs/internal/graph"
-	"github.com/lasder-ca/aegis-acbs/internal/i18n"
-	"github.com/lasder-ca/aegis-acbs/internal/search"
-	"github.com/lasder-ca/aegis-acbs/internal/server"
-	"github.com/lasder-ca/aegis-acbs/internal/version"
+	"github.com/sahenjp/aegis-acbs/internal/bench"
+	"github.com/sahenjp/aegis-acbs/internal/graph"
+	"github.com/sahenjp/aegis-acbs/internal/i18n"
+	"github.com/sahenjp/aegis-acbs/internal/search"
+	"github.com/sahenjp/aegis-acbs/internal/server"
+	"github.com/sahenjp/aegis-acbs/internal/version"
 )
 
 func main() {

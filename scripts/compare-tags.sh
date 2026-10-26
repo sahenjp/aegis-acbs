@@ -15,10 +15,10 @@ trap 'git -C "$ROOT" worktree remove --force "$TMP/old" >/dev/null 2>&1 || true;
 git -C "$ROOT" worktree add --detach "$TMP/old" "$OLD_TAG" >/dev/null
 CURRENT_VERSION="$(cat "$ROOT/VERSION")"
 OLD_VERSION="$(cat "$TMP/old/VERSION")"
-go build -trimpath -ldflags "-X github.com/lasder-ca/aegis-acbs/internal/version.Version=$CURRENT_VERSION" -o "$TMP/current-aegis" "$ROOT/cmd/aegis"
+go build -trimpath -ldflags "-X github.com/sahenjp/aegis-acbs/internal/version.Version=$CURRENT_VERSION" -o "$TMP/current-aegis" "$ROOT/cmd/aegis"
 (
   cd "$TMP/old"
-  go build -trimpath -ldflags "-X github.com/lasder-ca/aegis-acbs/internal/version.Version=$OLD_VERSION" -o "$TMP/old-aegis" ./cmd/aegis
+  go build -trimpath -ldflags "-X github.com/sahenjp/aegis-acbs/internal/version.Version=$OLD_VERSION" -o "$TMP/old-aegis" ./cmd/aegis
 )
 
 run_one() {

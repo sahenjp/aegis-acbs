@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-REPO="${AEGIS_GITHUB_REPO:-lasder-ca/aegis-acbs}"
+REPO="${AEGIS_GITHUB_REPO:-sahenjp/aegis-acbs}"
 VERSION="$(cat VERSION)"
 TAG="v$VERSION"
 REMOTE_URL="https://github.com/$REPO.git"

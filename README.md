@@ -9,7 +9,7 @@
 
 <br>
 
-[![CI](https://github.com/lasder-ca/aegis-acbs/actions/workflows/ci.yml/badge.svg)](https://github.com/lasder-ca/aegis-acbs/actions/workflows/ci.yml)
+[![CI](https://github.com/sahenjp/aegis-acbs/actions/workflows/ci.yml/badge.svg)](https://github.com/sahenjp/aegis-acbs/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go&logoColor=white)
 ![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-555)
 ![Status](https://img.shields.io/badge/status-research%20prototype-7c3aed)
@@ -86,7 +86,7 @@ The first public release includes a user-run Tokyo travel-time experiment from *
 ### 1. Build and test
 
 ```bash
-git clone https://github.com/lasder-ca/aegis-acbs.git
+git clone https://github.com/sahenjp/aegis-acbs.git
 cd aegis-acbs
 
 go test ./...

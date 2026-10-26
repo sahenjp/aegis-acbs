@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lasder-ca/aegis-acbs/internal/search"
+	"github.com/sahenjp/aegis-acbs/internal/search"
 )
 
 type RegretValidationConfig struct {

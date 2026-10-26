@@ -9,7 +9,7 @@
 ![Evidence](https://img.shields.io/badge/検証-再現可能-16a34a)
 ![Status](https://img.shields.io/badge/段階-研究プロトタイプ-475569)
 
-[トップ](../README.ja.md) · [クイックスタート](../README.ja.md#クイックスタート) · [変更履歴](../CHANGELOG.md) · [GitHub Issues](https://github.com/lasder-ca/aegis-acbs/issues)
+[トップ](../README.ja.md) · [クイックスタート](../README.ja.md#クイックスタート) · [変更履歴](../CHANGELOG.md) · [GitHub Issues](https://github.com/sahenjp/aegis-acbs/issues)
 
 </div>
 
@@ -221,6 +221,6 @@ flowchart TB
 
 <div align="center">
 
-[トップへ戻る](../README.ja.md) · [最初にアルゴリズムを読む](ALGORITHM.md) · [Issueを開く](https://github.com/lasder-ca/aegis-acbs/issues/new/choose)
+[トップへ戻る](../README.ja.md) · [最初にアルゴリズムを読む](ALGORITHM.md) · [Issueを開く](https://github.com/sahenjp/aegis-acbs/issues/new/choose)
 
 </div>

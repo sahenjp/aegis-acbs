@@ -5,7 +5,7 @@ import (
 	"math"
 	"sync"
 
-	"github.com/lasder-ca/aegis-acbs/internal/graph"
+	"github.com/sahenjp/aegis-acbs/internal/graph"
 )
 
 // catchHeuristic evaluates the admissible geographic lower bound the package

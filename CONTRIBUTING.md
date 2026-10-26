@@ -50,7 +50,7 @@ flowchart LR
 ## セットアップ
 
 ```bash
-git clone https://github.com/lasder-ca/aegis-acbs.git
+git clone https://github.com/sahenjp/aegis-acbs.git
 cd aegis-acbs
 
 go test ./...
@@ -188,6 +188,6 @@ flowchart TD
 
 <div align="center">
 
-[Issueを開く](https://github.com/lasder-ca/aegis-acbs/issues/new/choose) · [セキュリティ](SECURITY.md) · [ドキュメント一覧](docs/README.md)
+[Issueを開く](https://github.com/sahenjp/aegis-acbs/issues/new/choose) · [セキュリティ](SECURITY.md) · [ドキュメント一覧](docs/README.md)
 
 </div>

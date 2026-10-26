@@ -33,7 +33,7 @@ build_one() {
   local base="aegis-acbs_${VERSION}_${os}_${arch}"
   local stage="$(mktemp -d)"
   mkdir -p "$stage/$base"
-  GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/lasder-ca/aegis-acbs/internal/version.Version=$VERSION" -o "$stage/$base/aegis$ext" ./cmd/aegis
+  GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/sahenjp/aegis-acbs/internal/version.Version=$VERSION" -o "$stage/$base/aegis$ext" ./cmd/aegis
   cp README.md README.ja.md LICENSE RELEASE_NOTES.md "$stage/$base/"
   cp -r docs benchmarks scripts benchdata "$stage/$base/"
   rm -f "$stage/$base/benchdata/hatfield-uk.aegis"
