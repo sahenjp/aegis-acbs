@@ -153,3 +153,12 @@ bin/aegis benchmark \
 `v0.1.0`が最初の公開版です。CHANGELOGに記載されたそれ以前の番号は、公開前の研究過程を示します。
 
 [MIT License](LICENSE)で公開しています。
+
+## 引用
+
+このソフトウェアを引用する場合は、次のように書いてください。
+
+    sahen. Aegis Coupled-Bound Search (ACBS), version 0.1.0.
+    https://github.com/sahenjp/aegis-acbs
+
+機械可読なメタデータは [CITATION.cff](CITATION.cff) にあります。Zenodo の登録が済んだら、concept DOI をここに追記します。

@@ -192,3 +192,13 @@ bin/aegis profile-trigger \
 `v0.1.0` is the first public research release. Earlier version numbers in the changelog refer to private research iterations.
 
 Released under the [MIT License](LICENSE).
+
+## Citation
+
+If you cite this software, use:
+
+    sahen. Aegis Coupled-Bound Search (ACBS), version 0.1.0.
+    https://github.com/sahenjp/aegis-acbs
+
+Machine-readable metadata is in [CITATION.cff](CITATION.cff). A concept DOI
+will be added here once the Zenodo archive is registered.

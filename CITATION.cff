@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Aegis Coupled-Bound Search (ACBS)"
+abstract: >-
+  An exact point-to-point shortest-path implementation for weighted directed
+  road graphs. Forward and reverse frontiers advance under one shared proof of
+  optimality, with a balanced admissible potential and an adaptive scheduler.
+  Measured on real OpenStreetMap road networks for Tokyo and Osaka, it returned
+  exact shortest paths on every query and finished ahead of bidirectional
+  Dijkstra on both a distance metric and a travel-time metric. The size of the
+  advantage depends on how much information the geographic lower bound carries,
+  so this is not a general superiority claim.
+type: software
+authors:
+  - alias: sahen
+    website: "https://github.com/sahenjp"
+license: MIT
+repository-code: "https://github.com/sahenjp/aegis-acbs"
+url: "https://github.com/sahenjp/aegis-acbs"
+version: "0.1.0"
+keywords:
+  - shortest path
+  - bidirectional search
+  - road networks
+  - exact search
