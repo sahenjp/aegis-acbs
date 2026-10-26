@@ -238,6 +238,67 @@ comparison that holds on one graph says little about another.
   the previous section shows the advantage shrinking and then reversing as the
   bound weakens. Travel time has not been measured here.
 
+## Real road network: travel time
+
+Distance is the easy case for ACBS: the geographic lower bound is a distance
+bound, so on a distance metric it is strong. Travel time is the case that
+matters for routing products and the case where the bound should be weakest, so
+the same central Tokyo network was imported a second time with `metric=time`
+and measured again.
+
+The topology is identical, so the only change is the edge cost. Travel time
+saturates the geographic bound: `heuristicStrength` falls from 0.9999 on the
+distance graph to 0.2505 here, because a street's travel time depends on its
+speed limit and the fastest roads compress many metres into little time. All
+runs used 300 queries, 5 repeats, interleaved order, seed 1010.
+
+| Algorithm | median | p95 | vs Dijkstra | median expanded | correct |
+|---|---:|---:|---:|---:|---:|
+| Dijkstra | 95.54 ms | 198.28 ms | 1.00x | 554,840 | 300/300 |
+| bidirectional Dijkstra | 50.23 ms | 127.40 ms | 1.90x | 319,568 | 300/300 |
+| A* | 62.94 ms | 263.30 ms | 1.52x | 229,332 | 300/300 |
+| PB-Buckets | 49.64 ms | 121.79 ms | 1.92x | 292,999 | 300/300 |
+| MEET | 50.00 ms | 126.20 ms | 1.91x | 319,568 | 300/300 |
+| ACBS | **27.64 ms** | **94.97 ms** | **3.46x** | 120,199 | 300/300 |
+
+Pairwise, ACBS finished ahead of bidirectional Dijkstra on 252 of 300 queries,
+ahead of A* on 293 of 300, and ahead of Dijkstra on 291 of 300. It was not ahead
+of every query, but it was ahead of most of them, and it was exact on all 300.
+
+### Reading the two metrics together
+
+| Metric | heuristicStrength | ACBS vs bidirectional Dijkstra | pairwise |
+|---|---:|---:|---:|
+| distance | 0.9999 | 8.64x | 390 of 400 |
+| travel time | 0.2505 | 3.46x | 252 of 300 |
+
+The advantage shrinks as the bound weakens, which is what the grid sweep
+predicted. It does not disappear, though, and this is the part the grid
+experiment alone could not have shown: the road network's irregular structure
+keeps giving the scheduler something to exploit even when the heuristic carries
+much less information. A 2.5x smaller gain is still a gain, and ACBS remained
+the fastest algorithm on both metrics.
+
+### An admissibility check on the weak-heuristic graph
+
+A weak heuristic is only useful if it is still a true lower bound, so the
+distance bound was checked against exact Dijkstra distances on the travel-time
+graph. Across 80 sampled source-target pairs the bound exceeded the true
+distance zero times. The heuristic is admissible on this graph, which means the
+speedups above come from a correct search rather than from an unsound bound
+that terminates early.
+
+### What may and may not be claimed
+
+- May be claimed: on this network, with both distance and travel time as cost,
+  ACBS returned exact shortest paths on every query and finished ahead of the
+  baselines on most queries.
+- May **not** be claimed: that ACBS is faster on road networks in general. This
+  is one city and one machine.
+- May **not** be claimed: that the gain generalises to other cities whose
+  geometry and road hierarchy differ, or to graphs with turn restrictions,
+  which this import does not model.
+
 ## Reproducing these measurements
 
 The grid graphs come from `scripts/gen`. The Tokyo graph is not distributed
