@@ -175,3 +175,72 @@ This is exactly the kind of scale-dependent result that the v1.0.0 gate in
 `docs/RELEASE_PLAN.md` requires independent reproduction to settle, and it is a
 concrete example of why a single measurement and a single statistic are not
 enough.
+## Real road network: central Tokyo
+
+The synthetic grids above decide very little, because a uniform lattice rewards
+any search the same way. The question that matters is what happens on a real
+road network, so the same code was measured on OpenStreetMap data for central
+Tokyo.
+
+Graph: extracted from the Geofabrik Kanto extract, restricted to central Tokyo
+and to ways that carry vehicle traffic, then imported with the `car`/`distance`
+profile. It has 1,098,173 nodes and 2,262,568 directed edges. All runs used 400
+queries, 5 repeats, interleaved order, seed 1010.
+
+| Algorithm | median | p95 | vs Dijkstra | median expanded | correct |
+|---|---:|---:|---:|---:|---:|
+| Dijkstra | 72.35 ms | 156.88 ms | 1.00x | 531,031 | 400/400 |
+| bidirectional Dijkstra | 50.60 ms | 125.64 ms | 1.43x | 368,789 | 400/400 |
+| A* | 16.95 ms | 104.08 ms | 4.27x | 70,630 | 400/400 |
+| ACBS | **8.38 ms** | **46.77 ms** | **8.64x** | 44,201 | 400/400 |
+
+The median does not tell the whole story here either, so the same queries were
+compared pairwise as well. ACBS finished ahead of bidirectional Dijkstra on 390
+of 400 queries and behind on 10. That is a consistent advantage, not an artifact
+of a few very fast queries, which is what the earlier grid measurements turned
+out to be.
+
+### Why the grid result and the road result disagree
+
+The two experiments ask different questions, and the difference comes from graph
+structure rather than from heuristic strength.
+
+On a uniform lattice every route runs in roughly the same direction, so a
+bidirectional search that advances both frontiers gains little: both frontiers
+sweep a similar share of the plane and meet near the middle. Central Tokyo is not
+uniform. It mixes wide arterial roads, dense side streets and a river, so the
+forward and backward frontiers reach the same region at very different costs. A
+search that scores each direction by its lower-bound progress, and spends edge
+budget accordingly, can exploit that asymmetry.
+
+### The literature agrees that this can happen
+
+Holte et al. describe this reversal. In *MM: A Bidirectional Search Algorithm
+that Is Guaranteed to Meet in the Middle* (AAAI 2016; Artificial Intelligence
+252, 2017) they write that as the heuristic's accuracy increases or decreases,
+the advantage shifts from one algorithm to another. Shperberg et al. give the
+same phenomenon a name in *Bidirectional Heuristic Search: Expanding Nodes by a
+Lower Bound* (IJCAI 2020). They call an algorithm well-behaved when using a
+stronger heuristic never causes extra node expansions, and they show that MM is
+not well-behaved. That is the mechanism behind the results in this document. A
+comparison that holds on one graph says little about another.
+
+### What may and may not be claimed
+
+- May be claimed: on this real road network, with distance as the cost and the
+  geographic lower bound available, ACBS finished ahead of bidirectional
+  Dijkstra and A* on both the median and the paired-query comparison, while
+  staying exact on every query.
+- May **not** be claimed: that ACBS is faster on road networks in general. This
+  is one city, one metric and one machine.
+- May **not** be claimed: that the advantage transfers to travel-time costs. The
+  heuristic is a distance bound, so a time metric weakens it. The grid sweep in
+  the previous section shows the advantage shrinking and then reversing as the
+  bound weakens. Travel time has not been measured here.
+
+## Reproducing these measurements
+
+The grid graphs come from `scripts/gen`. The Tokyo graph is not distributed
+with the repository because of its size. It is rebuilt from the Geofabrik Kanto
+extract with a bounding box around Tokyo Station, then imported with
+`import-osm`.
