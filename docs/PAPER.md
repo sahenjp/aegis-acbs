@@ -101,9 +101,8 @@ rule is shared with MM-class algorithms. It comes from the order in which work
 is performed.
 
 Second, Siag et al. observe that taking the maximum over several available
-bounds gives the tightest condition available. ACBS consults only one. Bounds
-B5 to B7 combine f and g terms and are not evaluated here, which is a concrete
-direction for improvement that we have not yet tested.
+bounds gives the tightest condition available. ACBS consults only one. Section
+5.4 reports what happened when we tested the obvious follow-up.
 
 ## 4. Method
 
@@ -195,6 +194,51 @@ report the same direction in their own experiments, with their MEET algorithm
 roughly on par with A* on one grid map and about twice as slow on another where
 the heuristics are less informative.
 
+### 5.4 Does a tighter termination condition help?
+
+Section 5.1 to 5.3 measure the speed of ACBS but say nothing about whether its
+termination condition is the tightest available. This section tests that.
+
+Since ACBS keeps only the g-bound, the natural experiment is to keep several.
+We added `multibound`, a plain bidirectional A* that terminates on the maximum
+of the g-bound, the f-bound and the b-bound. It deliberately has no scheduler,
+so the only change from a plain bidirectional A* is the termination condition.
+That isolates the effect we want to measure.
+
+The first version was wrong, and the benchmark said so: 267 of 300 queries
+returned over-estimates. The cause is instructive. The frontiers are ordered by
+reduced key, and we were reading the peeked item's `g` as the frontier minimum.
+That is not valid, because the item holding the smallest reduced key need not
+hold the smallest `g`. The resulting "lower bound" exceeded the true optimum,
+which is exactly what a lower bound must never do. Converting the reduced-key
+sum back to original units, as ACBS already does, fixed it, and the corrected
+version returned 300 of 300.
+
+The corrected version is still slower.
+
+| Algorithm | Median | vs Dijkstra | Expanded | Relaxed | Correct |
+|---|---:|---:|---:|---:|---:|
+| Dijkstra | 81.06 ms | 1.00x | 531,266 | 818,508 | 300/300 |
+| bidirectional Dijkstra | 61.45 ms | 1.32x | 411,246 | 818,508 | 300/300 |
+| A* | 18.33 ms | 4.42x | 70,630 | 144,344 | 300/300 |
+| ACBS | **9.76 ms** | **8.31x** | 44,726 | 92,176 | 300/300 |
+| multibound | 15.71 ms | 5.16x | 54,864 | 60,356 | 300/300 |
+
+Paired against ACBS, multibound finished ahead on only 23 of 300 queries.
+
+The work counters explain the result. multibound relaxes 35 percent **fewer**
+edges than ACBS, so the tighter bound does prune work, but it expands 23 percent
+**more** nodes. It advances on the smaller key, while ACBS spends edge work
+according to how fast each direction is raising the coupled bound. **The
+scheduler is worth more than the bound.** That is consistent with ACBS's own
+ablation, where removing only the scheduler cost 1.5 to 2.5 ms per query on a
+1,000,000-node lattice.
+
+So the theoretical improvement in the termination condition did not translate
+into a practical one, and the reason is that the experiment held the expansion
+order fixed. A version that combined the tighter bound with the ACBS scheduler
+would be the natural next step and has not been measured.
+
 ## 6. Limitations
 
 - Two cities, one machine. No claim is made about other cities or hardware.
@@ -206,7 +250,9 @@ the heuristics are less informative.
   unlikely to change the ranking, but absolute distances here are optimistic.
   These graphs are a performance test bed, not a validation of routing
   correctness.
-- Only one of the enumerated bounds is consulted. Bounds B5 to B7 are untested.
+- Only one of the enumerated bounds is consulted. Section 5.4 tests a
+  three-bound variant and finds it slower, because the experiment kept a plain
+  expansion order; the combination with the scheduler is untested.
 - Travel-time results use a speed model derived from `maxspeed` tagging, not
   observed traffic.
 
