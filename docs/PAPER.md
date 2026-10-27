@@ -236,8 +236,23 @@ ablation, where removing only the scheduler cost 1.5 to 2.5 ms per query on a
 
 So the theoretical improvement in the termination condition did not translate
 into a practical one, and the reason is that the experiment held the expansion
-order fixed. A version that combined the tighter bound with the ACBS scheduler
-would be the natural next step and has not been measured.
+order fixed. The obvious follow-up is to hold the scheduler fixed instead and
+vary only the bound. We tried that and could not make it exact, so it is
+recorded as an open question rather than a result.
+
+That attempt added a bound-mode switch to the ACBS search so the scheduler could
+run unchanged while the termination rule widened. On real Tokyo queries the
+variant returned over-estimates on 5 of 40 sampled pairs, all above the true
+optimum. Disabling the individual extra terms one at a time showed the fault was
+in how the f-bound and the b-bound were derived from frontier nodes whose labels
+are ordered by reduced key: converting a per-node bound into reduced units and
+comparing it against the reduced incumbent is not sound in general, because the
+conversion rounds and because a node's label need not be the frontier minimum.
+
+The change was reverted rather than shipped behind a flag. Exactness comes before
+speed, and a termination condition that is wrong in the unsafe direction runs
+fast and returns wrong answers. The question this section set out to answer, does
+a tighter bound help once the scheduler is held fixed, therefore remains open.
 
 ## 6. Limitations
 
@@ -251,8 +266,10 @@ would be the natural next step and has not been measured.
   These graphs are a performance test bed, not a validation of routing
   correctness.
 - Only one of the enumerated bounds is consulted. Section 5.4 tests a
-  three-bound variant and finds it slower, because the experiment kept a plain
-  expansion order; the combination with the scheduler is untested.
+  three-bound variant and finds it slower with a plain expansion order, and
+  records that the attempt to combine a wider bound with the ACBS scheduler
+  could not be made exact and was reverted. Whether a sound version would help is
+  unknown.
 - Travel-time results use a speed model derived from `maxspeed` tagging, not
   observed traffic.
 
