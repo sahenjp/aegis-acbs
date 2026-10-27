@@ -7,38 +7,42 @@ place.
 
 ## Abstract
 
-We describe Aegis Coupled-Bound Search (ACBS), an exact point-to-point shortest
-path algorithm for weighted directed road graphs. ACBS advances a forward and a
-reverse frontier under a single admissible potential, and stops when the sum of
-the two frontier minima reaches the best complete path found. We identify this
-termination rule as the g-bound, which is known: it is equivalent to bound B3 in
-the enumeration of Siag et al. (IJCAI 2023). We therefore make **no novelty
-claim for the stopping rule**. What ACBS adds is a scheduler that decides which
-frontier receives the next chunk of edge work, using the observed rise in the
-coupled lower bound per unit of work.
+We describe Aegis Coupled-Bound Search (ACBS), an exact point-to-point
+shortest-path algorithm for weighted directed road graphs. ACBS advances a
+forward and a reverse frontier under a single admissible potential and stops when
+the sum of the two frontier minimum priority keys reaches the best complete path
+found. That stopping rule is a standard reduced-cost bidirectional rule, not a
+contribution, and Section 3 explains why it is also not the g-bound that an
+earlier draft claimed. What ACBS adds is a scheduler that decides which frontier
+receives the next chunk of edge work, using the observed rise in the coupled
+lower bound per unit of work.
 
-We measured ACBS against Dijkstra, bidirectional Dijkstra and A* on real
+We measured ACBS against Dijkstra, bidirectional Dijkstra, and A* on real
 OpenStreetMap networks for Tokyo (1,098,173 nodes) and Osaka (748,903 nodes),
 under both a distance metric and a travel-time metric. Every query returned an
-exact shortest path. On distance, ACBS was 8.64 times faster than bidirectional
-Dijkstra in Tokyo and 6.59 times faster in Osaka by median. On travel time the
-gains were 3.46 and 3.39 times. The advantage shrinks as the geographic lower
-bound carries less information, and on a synthetic uniform lattice it disappears
-entirely. We report that reversal rather than omit it.
+exact shortest path. Against bidirectional Dijkstra, the median speedup was 6.04
+times in Tokyo and 4.38 times in Osaka on distance, and 1.82 and 1.54 times on
+travel time. Against plain unidirectional Dijkstra the ratios are larger, 8.64 and
+6.59 on distance; the tables report both baselines so the two are not confused.
+The advantage shrinks as the geographic lower bound carries less information, and
+on a synthetic uniform lattice it disappears entirely. We report that reversal
+rather than omitting it.
 
 ![ACBS search structure](figures/acbs-search.png)
 
 ## 1. Scope and what is new
 
-This note reports measurements rather than a new algorithm. Two things have to
-be kept apart.
+This note reports measurements rather than a new algorithm. Two concepts must be
+distinguished.
 
 **Not new: the termination rule.** ACBS terminates when the sum of the two
-frontier minimum priority keys reaches the incumbent. Section 3 shows that this
-sum reduces to the well-known g-bound. Siag et al. (2023) enumerate seventeen
-non-dominated global bounds and prove that the maximum over available bounds is
-the tightest single condition; the g-bound is one of those seventeen. An earlier
-internal note described the rule as a contribution. It is not.
+frontier minimum priority keys reaches the incumbent, both in reduced units.
+Section 3 shows that this is a standard reduced-cost bidirectional rule and that
+it is *not* the g-bound, contrary to what an earlier draft of this note asserted.
+Siag et al. (2023) enumerate seventeen non-dominated global bounds and prove that
+the maximum over available bounds is the tightest single condition. ACBS does not
+evaluate any of them directly, because its heaps are ordered by reduced key. An
+earlier internal note described the rule as a contribution. It is not.
 
 **The candidate contribution: the scheduler.** Given a fixed potential and a
 fixed stopping rule, an exact bidirectional search still has freedom in how much
@@ -56,7 +60,7 @@ quickly is plausibly an instance of that idea rather than a departure from it.
 
 ## 2. The search
 
-For source s, target t and node v:
+For source s, target t, and node v, the following hold.
 
 - `g_F(v)` is the best known cost from s to v, `g_B(v)` the best known cost
   from v to t.
@@ -65,40 +69,59 @@ For source s, target t and node v:
   distance scaled by a conservative minimum cost per metre, so both are zero
   when coordinates or a safe scale are unavailable.
 - The balanced potential is `phi2(v) = h_F(v) - h_B(v)`.
-- Front keys are `k_F = 2 g_F + phi2(v) - phi2(s)` and
-  `k_B = 2 g_B + phi2(t) - phi2(v)`.
+- Priority keys for node v are `k_F(v) = 2 g_F(v) + phi2(v) - phi2(s)` and
+  `k_B(v) = 2 g_B(v) + phi2(t) - phi2(v)`.
 - `U` is the cost of the best complete path found so far.
 
 Consistency of the directional bounds keeps reduced edge costs non-negative in
 both directions, which lets each frontier use label setting on its reduced-cost
 graph.
 
-## 3. The termination rule is the g-bound
+## 3. What the termination rule is, and what it is not
 
-The implementation stops when `k_F + k_B >= 2U + phi2(t) - phi2(s)`
-(`internal/search/acbs.go`). Because `phi2(v) = h_F(v) - h_B(v)` and the
-`phi2(v)` terms cancel between the two keys,
-
-```
-k_F + k_B = 2 (g_F + g_B) + h_F(t) - h_B(s)
-bestReduced = 2 U + h_F(t) - h_B(s)
-```
-
-so the test reduces to
+The implementation stops when the sum of the two frontier minimum keys reaches
+the incumbent, both expressed in reduced units:
 
 ```
-U <= g_F + g_B
+min_{u in Open_F} k_F(u) + min_{w in Open_B} k_B(w) >= 2U + phi2(t) - phi2(s)
 ```
 
-which is the g-bound, `gMin_F + gMin_B + epsilon`. In the enumeration of Siag et
-al. (2023) this is bound B3. It is the same family used by MM (Holte et al.,
-2017).
+(`internal/search/acbs.go`). Substituting `phi2(v) = h_F(v) - h_B(v)` and writing
+u and w for the two frontier minima gives
+
+```
+k_F(u) + k_B(w) = 2(g_F(u) + g_B(w)) + h_F(t) - h_B(s) + (h_F(u) - h_B(u)) - (h_F(w) - h_B(w))
+```
+
+so the cancellation is exact only when u and w carry the same potential, which holds once the
+frontiers have met. Away from the meeting point the extra `(phi2(u) - phi2(w))` term
+remains.
+
+**This is not the g-bound, and an earlier draft of this section wrongly said it was.**
+The g-bound of Siag et al. (bound B3) is
+
+```
+min_{x in Open_F} g_F(x) + min_{y in Open_B} g_B(y) + epsilon
+```
+
+which takes the minimum of the *original* g-values across each whole frontier and
+uses no potential at all. ACBS does not track those minima. Its heaps are ordered
+by reduced key, so the node carrying the smallest key is not in general the node
+carrying the smallest g. The reduced-key sum is therefore a lower bound of a
+different kind, valid because the reduced costs are non-negative, but it is not
+bound B3.
+
+This distinction matters twice over. It removes the claim that ACBS reuses a
+known bound, which is a claim we cannot support; and it explains the failure
+recorded in Section 5.4, where deriving the f-bound and the b-bound from
+frontier nodes and converting them into reduced units produced values above the
+true optimum.
 
 Two consequences follow, and both shape what this note can claim.
 
-First, the measured advantage does not come from the stopping rule, because the
-rule is shared with MM-class algorithms. It comes from the order in which work
-is performed.
+First, the stopping rule used here is a standard reduced-cost bidirectional rule,
+not a contribution. Whatever advantage the measurements show therefore comes from
+the order in which work is performed, not from the test that ends the search.
 
 Second, Siag et al. observe that taking the maximum over several available
 bounds gives the tightest condition available. ACBS consults only one. Section
@@ -114,8 +137,8 @@ the same queries, because the two disagree on some graphs.
 
 **Data.** OpenStreetMap extracts from Geofabrik, restricted to a box around the
 city centre and to ways that carry vehicle traffic, imported with the `car`
-profile. Cost is `ceil(meters * 1000)` for the distance metric and
-`ceil(meters / speed * 1000)` for travel time.
+profile. The edge cost is `ceil(meters * 1000)` for the distance metric and
+`ceil(meters / speed * 1000)` for the travel-time metric.
 
 | Graph | Nodes | Directed edges | heuristicStrength (distance / time) |
 |---|---:|---:|---:|
@@ -123,10 +146,12 @@ profile. Cost is `ceil(meters * 1000)` for the distance metric and
 | Osaka | 748,903 | 1,575,615 | 1.0000 / 0.2786 |
 | Synthetic lattice | 1,000,000 | 2,596,627 | 0.9955 |
 
-`heuristicStrength` is the ratio of the minimum to the mean cost per metre, so
-it falls as edge costs stop tracking straight-line distance. A travel-time
-metric saturates the geographic bound, which is exactly why it is reported
-separately.
+`heuristicStrength` is the ratio of the minimum to the mean cost per metre. In
+mathematics a bound is *saturated* when equality holds, which is the opposite of
+what happens here, so the term is avoided. A travel-time metric makes the
+geographic bound much **looser**: to stay admissible it must assume the slowest
+possible speed everywhere, while real roads vary widely. That loses pruning
+power, which is why travel time is reported separately.
 
 ## 5. Results
 
@@ -164,7 +189,7 @@ queries and 223 of 300 Osaka queries.
 
 A weak lower bound is only useful if it remains a valid one, so admissibility
 was checked directly on the travel-time graph. Across 80 sampled source-target
-pairs the geographic bound exceeded the exact Dijkstra distance zero times.
+pairs, the geographic bound never exceeded the exact shortest-path distance.
 
 ### 5.3 Where the advantage goes away
 
@@ -194,65 +219,61 @@ report the same direction in their own experiments, with their MEET algorithm
 roughly on par with A* on one grid map and about twice as slow on another where
 the heuristics are less informative.
 
-### 5.4 Does a tighter termination condition help?
+### 5.4 Do more bounds help?
 
-Section 5.1 to 5.3 measure the speed of ACBS but say nothing about whether its
-termination condition is the tightest available. This section tests that.
+Sections 5.1 through 5.3 measure the speed of ACBS but say nothing about whether
+its stopping condition can be tightened. This section reports an attempt to do
+that, and why it did not produce the answer we wanted.
 
-Since ACBS keeps only the g-bound, the natural experiment is to keep several.
-We added `multibound`, a plain bidirectional A* that terminates on the maximum
-of the g-bound, the f-bound and the b-bound. It deliberately has no scheduler,
-so the only change from a plain bidirectional A* is the termination condition.
-That isolates the effect we want to measure.
+The intent was to terminate on the maximum of several admissible global bounds,
+following Siag et al. (2023), who show that the maximum over the bounds an
+algorithm can keep is the tightest condition available. Two variants were built.
 
-The first version was wrong, and the benchmark said so: 267 of 300 queries
-returned over-estimates. The cause is instructive. The frontiers are ordered by
-reduced key, and we were reading the peeked item's `g` as the frontier minimum.
-That is not valid, because the item holding the smallest reduced key need not
-hold the smallest `g`. The resulting "lower bound" exceeded the true optimum,
-which is exactly what a lower bound must never do. Converting the reduced-key
-sum back to original units, as ACBS already does, fixed it, and the corrected
-version returned 300 of 300.
+- `multibound`, a plain bidirectional A* with no scheduler, so that only the
+  stopping condition varies;
+- a bound-mode switch on ACBS itself, so that the scheduler could be held fixed
+  while only the stopping condition widened.
 
-The corrected version is still slower.
+**Both variants were unsound and neither is in the released code.** The
+diagnosis is worth recording because it is the same mistake twice.
+
+The frontiers are ordered by reduced key. That key is a function of the node's
+`g`, its potential, and the source or target potential, so the node carrying the
+smallest reduced key is *not* in general the node carrying the smallest `g`.
+Deriving an f-bound or a b-bound from the peeked node, and then converting that
+value into reduced units to compare against the reduced incumbent, mixes two
+different orderings. The result exceeded the true optimum, which is exactly what
+a lower bound must never do: on real Tokyo queries the ACBS variant returned
+overestimates on 5 of 40 sampled pairs, and the unscheduled variant on 33 of 300.
+A "lower bound" that reaches 37,707,590 against a true optimum of 36,691,793 is
+not a lower bound.
+
+The bound-mode switch was reverted rather than shipped behind a flag, because a
+termination condition that is wrong in the unsafe direction runs fast and answers
+wrongly. What remains in the release is the plain `multibound` variant, and even
+that one must be read carefully: after the fix it computes the reduced-key sum
+and then assigns the same value to the f-bound and the b-bound slots, so it is
+in practice only the reduced-cost rule plus a smaller-key expansion order. It is
+kept as a measurement vehicle, not as an implementation of the multi-bound idea.
+
+Measured on the Tokyo graph with the distance metric, 300 queries, all correct.
 
 | Algorithm | Median | vs Dijkstra | Expanded | Relaxed | Correct |
 |---|---:|---:|---:|---:|---:|
-| Dijkstra | 81.06 ms | 1.00x | 531,266 | 818,508 | 300/300 |
+| Dijkstra | 81.06 ms | 1.00x | 531,266 | 1,091,302 | 300/300 |
 | bidirectional Dijkstra | 61.45 ms | 1.32x | 411,246 | 818,508 | 300/300 |
 | A* | 18.33 ms | 4.42x | 70,630 | 144,344 | 300/300 |
 | ACBS | **9.76 ms** | **8.31x** | 44,726 | 92,176 | 300/300 |
 | multibound | 15.71 ms | 5.16x | 54,864 | 60,356 | 300/300 |
 
-Paired against ACBS, multibound finished ahead on only 23 of 300 queries.
+Paired against ACBS, multibound finished ahead on only 23 of 300 queries. It
+relaxes 35 percent fewer edges, so advancing on the smaller key does avoid work,
+but it expands 23 percent more nodes. The scheduler is worth more than the
+reduced-key ordering here.
 
-The work counters explain the result. multibound relaxes 35 percent **fewer**
-edges than ACBS, so the tighter bound does prune work, but it expands 23 percent
-**more** nodes. It advances on the smaller key, while ACBS spends edge work
-according to how fast each direction is raising the coupled bound. **The
-scheduler is worth more than the bound.** That is consistent with ACBS's own
-ablation, where removing only the scheduler cost 1.5 to 2.5 ms per query on a
-1,000,000-node lattice.
-
-So the theoretical improvement in the termination condition did not translate
-into a practical one, and the reason is that the experiment held the expansion
-order fixed. The obvious follow-up is to hold the scheduler fixed instead and
-vary only the bound. We tried that and could not make it exact, so it is
-recorded as an open question rather than a result.
-
-That attempt added a bound-mode switch to the ACBS search so the scheduler could
-run unchanged while the termination rule widened. On real Tokyo queries the
-variant returned over-estimates on 5 of 40 sampled pairs, all above the true
-optimum. Disabling the individual extra terms one at a time showed the fault was
-in how the f-bound and the b-bound were derived from frontier nodes whose labels
-are ordered by reduced key: converting a per-node bound into reduced units and
-comparing it against the reduced incumbent is not sound in general, because the
-conversion rounds and because a node's label need not be the frontier minimum.
-
-The change was reverted rather than shipped behind a flag. Exactness comes before
-speed, and a termination condition that is wrong in the unsafe direction runs
-fast and returns wrong answers. The question this section set out to answer, does
-a tighter bound help once the scheduler is held fixed, therefore remains open.
+**So the question remains open.** Whether a sound multi-bound termination
+condition, combined with the ACBS scheduler, would beat the current rule has not
+been measured.
 
 ## 6. Limitations
 
@@ -260,16 +281,18 @@ a tighter bound help once the scheduler is held fixed, therefore remains open.
 - The stopping rule is known; the scheduler is the only candidate contribution
   and its distinctness from prior expansion policies is unresolved.
 - Turn restrictions are not modelled. The Tokyo box contains 2,089 OSM
-  restrictions, 0.092 percent of directed edges. They are small in number,
-  thinly spread and neutral with respect to algorithm choice, so they are
-  unlikely to change the ranking, but absolute distances here are optimistic.
+  restrictions, 0.092 percent of directed edges. They are few, sparse, and
+  neutral with respect to algorithm choice, so they are unlikely to change the
+  ranking, but absolute distances here are optimistic.
   These graphs are a performance test bed, not a validation of routing
   correctness.
-- Only one of the enumerated bounds is consulted. Section 5.4 tests a
-  three-bound variant and finds it slower with a plain expansion order, and
-  records that the attempt to combine a wider bound with the ACBS scheduler
-  could not be made exact and was reverted. Whether a sound version would help is
-  unknown.
+- Only one stopping condition is consulted. Section 5.4 records that both
+  attempts to widen it were unsound and were reverted or reduced, so whether a
+  sound multi-bound condition would help is unknown.
+- **The scheduler itself is not specified in this draft.** It is the only
+  candidate contribution, and it is described here only in prose. An analysis of
+  chunk sizing, the efficiency score, and the budget rule is required before this
+  can be evaluated by anyone else.
 - Travel-time results use a speed model derived from `maxspeed` tagging, not
   observed traffic.
 
@@ -299,3 +322,5 @@ including the defects found during development and how each was resolved, are in
   Conditions. IJCAI 2025.
 - Alcázar, Riddle, Barley. A Unifying View on Individual Bounds and Heuristic
   Inaccuracies in Bidirectional Search. AAAI 2020.
+- Goldberg, Harrelson. Computing the Shortest Path: A* Search Meets Graph
+  Theory. SODA 2005. (Balanced bidirectional A* termination.)
