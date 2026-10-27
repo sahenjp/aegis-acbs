@@ -37,7 +37,7 @@ distinguished.
 
 **Not new: the termination rule.** ACBS terminates when the sum of the two
 frontier minimum priority keys reaches the incumbent, both in reduced units.
-Section 3 shows that this is a standard reduced-cost bidirectional rule and that
+Section 4 shows that this is a standard reduced-cost bidirectional rule and that
 it is *not* the g-bound, contrary to what an earlier draft of this note asserted.
 Siag et al. (2023) enumerate seventeen non-dominated global bounds and prove that
 the maximum over available bounds is the tightest single condition. ACBS does not
@@ -77,7 +77,97 @@ Consistency of the directional bounds keeps reduced edge costs non-negative in
 both directions, which lets each frontier use label setting on its reduced-cost
 graph.
 
-## 3. What the termination rule is, and what it is not
+## 3. The scheduler
+
+This is the only component this note offers as a contribution, so it is
+specified here in enough detail to reimplement. Section 4 then shows that the
+stopping rule, by contrast, is standard.
+
+The search proceeds in **chunks**. At the start of each chunk it chooses a
+direction and a budget, expands up to that budget, then updates its estimate of
+how productive each direction has been.
+
+### 3.1 State
+
+Two quantities are kept per direction, both integer scalars rather than arrays.
+
+- `score_D`, an exponentially weighted estimate of how much the coupled lower
+  bound rose per unit of work in direction D, scaled by 10^6.
+- `sampled_D`, false until direction D has completed at least one chunk.
+
+Plus `last`, the direction of the previous chunk, and `consecutive`, the number
+of chunks taken in that same direction.
+
+### 3.2 Work and gain
+
+After a chunk ends, let `dLB` be the increase in the coupled lower bound
+`min_F k_F + min_B k_B` across the chunk, and let
+
+```
+work = relaxedEdges + 4 * expandedNodes + 2 * queueGrowth
+```
+
+where `queueGrowth` is the change in the sum of the two queue lengths, counted
+only when positive. Expanding a node is charged four times one relaxation, and
+growing the frontier is charged twice, so the measure reflects allocation and
+memory traffic rather than only relaxation count. The instantaneous score is
+
+```
+instant = 10^6 * dLB / work        (work is never 0)
+```
+
+The running estimate is an exponential moving average with weight 1/4.
+
+```
+score_D = score_D - score_D/4 + instant/4
+```
+
+### 3.3 Choosing the direction
+
+The rules apply in priority order.
+
+1. If `sampled_F` is false, choose F. If `sampled_B` is false, choose B. The
+   two directions are warmed up before their scores are compared.
+2. If `consecutive >= 6`, choose the opposite of `last`. Alternating
+   periodically stops the estimate of the idle direction from going stale.
+3. If `score_F > 1.1 * score_B`, choose F. If `score_B > 1.1 * score_F`,
+   choose B. The 10 percent margin is a dead band, so a small difference in the
+   estimates does not flip the direction every chunk.
+4. Otherwise the estimates are close. Break the tie by the smaller frontier
+   minimum key, then by the smaller degree (out-degree forward, in-degree
+   reverse), then by the shorter queue, then F.
+
+The last two rules are the same as the static ablation, so the adaptive
+scheduler only overrides them when the efficiency estimates differ by more than
+the dead band.
+
+### 3.4 Choosing the budget
+
+```
+base = 256 edges    if the graph has  < 10,000 edges
+     = 1024 edges   if it has between 10,000 and 100,000
+     = 2048 edges   otherwise
+
+budget = base
+if score_other > 0 and score_chosen >= 2 * score_other: budget = 2 * base
+if score_other > 0 and score_chosen >= 4 * score_other: budget = 4 * base
+if an upper bound has been found and budget > 2 * base: budget = 2 * base
+```
+
+The budget is edge work, not node count. A direction measured at twice the other
+gets twice the work, and one measured at four times gets four times as much,
+before the scheduler reconsiders. Once a complete path is known, the multiplier is capped
+at two, because the remaining job is to raise the lower bound far enough to
+prove that path optimal, and alternating helps with that more than concentrating
+work does.
+
+### 3.5 The static ablation
+
+`aegis-static` is identical except that it always uses `base` as the budget and
+skips rules 3.3.1 to 3.3.3, choosing directly by the tie-break order in 3.3.4.
+That is the comparison used in Section 1 and Section 6.5.
+
+## 4. What the termination rule is, and what it is not
 
 The implementation stops when the sum of the two frontier minimum keys reaches
 the incumbent, both expressed in reduced units:
@@ -113,7 +203,7 @@ bound B3.
 
 This distinction matters twice over. It removes the claim that ACBS reuses a
 known bound, which is a claim we cannot support; and it explains the failure
-recorded in Section 5.5, where deriving the f-bound and the b-bound from
+recorded in Section 6.5, where deriving the f-bound and the b-bound from
 frontier nodes and converting them into reduced units produced values above the
 true optimum.
 
@@ -127,7 +217,7 @@ Second, Siag et al. observe that taking the maximum over several available
 bounds gives the tightest condition available. ACBS consults only one. Section
 5.4 reports what happened when we tested the obvious follow-up.
 
-## 4. Method
+## 5. Method
 
 All comparisons use the same graph object, the same query set, the same warmup,
 and an interleaved measurement order, with no preprocessing for any algorithm.
@@ -153,9 +243,9 @@ geographic bound much **looser**: to stay admissible it must assume the slowest
 possible speed everywhere, while real roads vary widely. That loses pruning
 power, which is why travel time is reported separately.
 
-## 5. Results
+## 6. Results
 
-### 5.1 Distance metric
+### 6.1 Distance metric
 
 | Graph | Algorithm | Median | p95 | vs Dijkstra | Expanded | Correct |
 |---|---|---:|---:|---:|---:|---:|
@@ -171,7 +261,7 @@ power, which is why travel time is reported separately.
 Paired against bidirectional Dijkstra, ACBS finished ahead on 390 of 400 Tokyo
 queries and 288 of 300 Osaka queries.
 
-### 5.2 Travel-time metric
+### 6.2 Travel-time metric
 
 | Graph | Algorithm | Median | p95 | vs Dijkstra | Expanded | Correct |
 |---|---|---:|---:|---:|---:|---:|
@@ -191,7 +281,7 @@ A weak lower bound is only useful if it remains a valid one, so admissibility
 was checked directly on the travel-time graph. Across 80 sampled source-target
 pairs, the geographic bound never exceeded the exact shortest-path distance.
 
-### 5.3 Where the advantage comes from
+### 6.3 Where the advantage comes from
 
 A speedup can come from expanding fewer nodes, or from doing cheaper work per
 node. The two matter differently to anyone trying to reproduce or extend the
@@ -254,7 +344,7 @@ scheduler exploits is less pronounced.
 The 93 percent figure on local queries is the honest headline for that class.
 Seven queries out of a hundred do not beat bidirectional Dijkstra at all.
 
-### 5.4 Where the advantage goes away
+### 6.4 Where the advantage goes away
 
 The gain depends on the metric. To isolate that dependence, a 1,000,000-node
 uniform lattice was re-weighted so that the same topology carries progressively
@@ -282,7 +372,7 @@ report the same direction in their own experiments, with their MEET algorithm
 roughly on par with A* on one grid map and about twice as slow on another where
 the heuristics are less informative.
 
-### 5.5 Do more bounds help?
+### 6.5 Do more bounds help?
 
 Sections 5.1 through 5.3 measure the speed of ACBS but say nothing about whether
 its stopping condition can be tightened. This section reports an attempt to do
@@ -338,7 +428,7 @@ reduced-key ordering here.
 condition, combined with the ACBS scheduler, would beat the current rule has not
 been measured.
 
-## 6. Limitations
+## 7. Limitations
 
 - Two cities, one machine. No claim is made about other cities or hardware.
 - The stopping rule is known; the scheduler is the only candidate contribution
@@ -349,23 +439,40 @@ been measured.
   ranking, but absolute distances here are optimistic.
   These graphs are a performance test bed, not a validation of routing
   correctness.
-- Only one stopping condition is consulted. Section 5.5 records that both
+- Only one stopping condition is consulted. Section 6.5 records that both
   attempts to widen it were unsound and were reverted or reduced, so whether a
   sound multi-bound condition would help is unknown.
-- **The scheduler itself is not specified in this draft.** It is the only
-  candidate contribution, and it is described here only in prose. An analysis of
-  chunk sizing, the efficiency score, and the budget rule is required before this
-  can be evaluated by anyone else.
+- The scheduler is specified in Section 3, but it has not been compared against
+  another scheduling policy beyond the static ablation. Whether a different
+  score, dead band or budget schedule would do better is untested.
 - Travel-time results use a speed model derived from `maxspeed` tagging, not
   observed traffic.
 - Timings are medians over repeated interleaved runs on one machine. The
-  per-node cost in Section 5.3 mixes pop cost, edge scanning and per-query
+  per-node cost in Section 6.3 mixes pop cost, edge scanning and per-query
   setup, so it is an aggregate rather than a profile of where the time goes.
 - The query classes are defined by the harness, and the class boundaries are not
   varied here. The weakness on local queries (93 percent win rate) is not
   investigated further.
 
-## 7. Reproducing
+## 8. Reproducing
+
+The scheduler constants in Section 3 are those of `internal/search/acbs.go` at
+the commit this document describes. Anyone reimplementing it should check the
+following, which the released code satisfies.
+
+| Spec | Where it lives |
+|---|---|
+| `work = relaxed + 4*expanded + 2*queueGrowth` | `schedulerWork` |
+| `score = score - score/4 + instant/4` | `emaScore` |
+| 10 percent dead band before a score decides direction | `chooseACBSDirection` |
+| periodic alternation at `consecutive >= 6` | `chooseACBSDirection` |
+| base budget 256 / 1024 / 2048 by edge count | `acbsBaseEdgeBudget` |
+| 2x and 4x budget multipliers, capped at 2x once an upper bound exists | `acbsEdgeBudget` |
+
+The static ablation `aegis-static` uses the same search with `adaptive` false,
+which forces the base budget and the tie-break-only direction rule. Comparing
+`aegis` against `aegis-static` therefore isolates the scheduler and nothing
+else.
 
 The repository is <https://github.com/sahenjp/aegis-acbs>. Synthetic graphs come
 from `scripts/gen`. The OSM graphs are not distributed because of size; they are
