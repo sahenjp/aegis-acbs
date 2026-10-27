@@ -107,7 +107,14 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
     [[ -n "$tag" ]] && git -C "$bundle_stage/repo.git" tag -d "$tag" >/dev/null
   done < <(git -C "$bundle_stage/repo.git" tag -l)
   git -C "$bundle_stage/repo.git" symbolic-ref HEAD refs/heads/main
-  git -C "$bundle_stage/repo.git" bundle create "$DIST/aegis-acbs-$VERSION.bundle" --all
+  # The bundle is a convenience archive of the git history. It is not required
+  # for the release to be usable, and "git bundle --all" refuses to run when the
+  # clone has no refs left to include, which happens on a shallow CI checkout.
+  # Treat it as best effort so an otherwise complete release is not blocked.
+  if ! git -C "$bundle_stage/repo.git" bundle create "$DIST/aegis-acbs-$VERSION.bundle" --all; then
+    echo "warning: git bundle could not be created from this checkout; continuing without it" >&2
+    rm -f "$DIST/aegis-acbs-$VERSION.bundle"
+  fi
   rm -rf "$bundle_stage"
 fi
 
