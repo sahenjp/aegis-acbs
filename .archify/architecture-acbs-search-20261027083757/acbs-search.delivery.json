@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "0cf066ca-30d5-47aa-b16a-f9b43c470d1c",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/home/sahen/Projects/windows-migration/0c4f406ab316-aegis-acbs-public/.archify/architecture-acbs-search-20261027083757/candidate.json",
+  "output": "/home/sahen/Projects/windows-migration/0c4f406ab316-aegis-acbs-public/.archify/architecture-acbs-search-20261027083757/acbs-search.html",
+  "specification": {
+    "sha256": "6bc43828a17d36045550f8f379413292b6b7141659a86d8d5fd5edc1d7c9bcd0",
+    "bytes": 6274
+  },
+  "artifact": {
+    "sha256": "b8c73fc1fe5ec6fe3db825753e2d77f53d6058d831c68d24b06ea45590d778f4",
+    "bytes": 765499
+  }
+}

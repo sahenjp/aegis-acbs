@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "/home/sahen/Projects/windows-migration/0c4f406ab316-aegis-acbs-public/.archify/architecture-acbs-search-20261027083757/candidate.json",
+    "sha256": "6bc43828a17d36045550f8f379413292b6b7141659a86d8d5fd5edc1d7c9bcd0",
+    "bytes": 6274
+  },
+  "artifact": {
+    "path": "/home/sahen/Projects/windows-migration/0c4f406ab316-aegis-acbs-public/.archify/architecture-acbs-search-20261027083757/acbs-search.html",
+    "sha256": "b8c73fc1fe5ec6fe3db825753e2d77f53d6058d831c68d24b06ea45590d778f4",
+    "bytes": 765499
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "/home/sahen/Projects/windows-migration/0c4f406ab316-aegis-acbs-public/.archify/architecture-acbs-search-20261027083757/acbs-search.finalize.json",
+    "summaryReceipt": "/home/sahen/Projects/windows-migration/0c4f406ab316-aegis-acbs-public/.archify/architecture-acbs-search-20261027083757/acbs-search.finalize-summary.json",
+    "browserCheckReceipt": "/home/sahen/Projects/windows-migration/0c4f406ab316-aegis-acbs-public/.archify/architecture-acbs-search-20261027083757/acbs-search.browser-check.json"
+  },
+  "update": {
+    "status": "update_available",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.2.0",
+    "releaseNotes": "https://github.com/tt-a1i/archify/releases/tag/v3.2.0",
+    "severity": "normal",
+    "checkedAt": "2026-10-27T08:38:01.204Z",
+    "source": "cache",
+    "noticeRequired": true,
+    "noticeText": "Archify update: 3.0.1 → 3.2.0. A previous check at 2026-10-27T08:38:01.204Z found a newer release. Release notes: https://github.com/tt-a1i/archify/releases/tag/v3.2.0. The installed Skill has not changed; ask to snooze or ignore this reminder.",
+    "eventKey": "archify@sha256:70e210265c59f24dcbdf2a502ff671104b5454e7ee7d3554aecd86bad32384f5"
+  },
+  "visualReview": "not-requested",
+  "durationMs": 2055,
+  "layoutReviewRecommendation": {
+    "action": "inspect-leading-space",
+    "evidence": {
+      "measured": true,
+      "emptyTopPx": 190,
+      "emptyTopRatio": 0.253,
+      "occupiedTop": 190,
+      "viewBoxTop": 0,
+      "canvasHeight": 750,
+      "typicalNodeHeight": 62,
+      "reviewSuggested": true
+    },
+    "reason": "Measured content, including routes and labels, leaves a large empty area above the diagram. This is a composition suggestion, not a failed gate.",
+    "repair": "Check whether that leading space is intentional. If not, reposition the connected scene nearer the canvas origin while retaining room for its actual boundaries, labels and return routes. Preserve all meaning and user-fixed geometry, then rerun finalize. No screenshot is required."
+  }
+}

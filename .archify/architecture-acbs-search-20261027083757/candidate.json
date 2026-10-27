@@ -1,0 +1,316 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "ACBS Exact Bidirectional Search",
+    "subtitle": "two frontiers under one shared lower-bound proof",
+    "output": ".archify/architecture-acbs-search-20261027083757/acbs-search.html",
+    "quality_profile": "showcase",
+    "locale": "en",
+    "repository": {
+      "provider": "github",
+      "url": "https://github.com/sahenjp/aegis-acbs",
+      "revision": "282443c68d670a9f4d99d8b508f358b3aed42b9a"
+    }
+  },
+  "components": [
+    {
+      "id": "query",
+      "type": "external",
+      "label": "Route Query",
+      "sublabel": "source, target",
+      "pos": [
+        40,
+        300
+      ],
+      "size": [
+        132,
+        62
+      ],
+      "sources": [
+        {
+          "path": "cmd/aegis/main.go",
+          "line": 143
+        }
+      ]
+    },
+    {
+      "id": "graph",
+      "type": "database",
+      "label": "Road Graph",
+      "sublabel": "CSR + unit vectors",
+      "pos": [
+        40,
+        480
+      ],
+      "size": [
+        132,
+        62
+      ],
+      "sources": [
+        {
+          "path": "internal/graph/graph.go",
+          "line": 235
+        }
+      ]
+    },
+    {
+      "id": "potential",
+      "type": "backend",
+      "label": "Balanced Potential",
+      "sublabel": "phi2 = hF - hB",
+      "pos": [
+        320,
+        300
+      ],
+      "size": [
+        150,
+        62
+      ],
+      "sources": [
+        {
+          "path": "internal/search/acbs.go",
+          "line": 12
+        },
+        {
+          "path": "internal/search/acbs.go",
+          "line": 115
+        }
+      ]
+    },
+    {
+      "id": "frontF",
+      "type": "backend",
+      "label": "Forward Frontier",
+      "sublabel": "kF = 2gF + phi2 - phi2(s)",
+      "pos": [
+        540,
+        190
+      ],
+      "size": [
+        178,
+        62
+      ],
+      "sources": [
+        {
+          "path": "internal/search/acbs.go",
+          "line": 122
+        }
+      ]
+    },
+    {
+      "id": "frontB",
+      "type": "backend",
+      "label": "Reverse Frontier",
+      "sublabel": "kB = 2gB + phi2(t) - phi2",
+      "pos": [
+        540,
+        410
+      ],
+      "size": [
+        178,
+        62
+      ],
+      "sources": [
+        {
+          "path": "internal/search/acbs.go",
+          "line": 122
+        }
+      ]
+    },
+    {
+      "id": "sched",
+      "type": "backend",
+      "label": "Edge-Work Scheduler",
+      "sublabel": "spends budget by LB progress",
+      "pos": [
+        540,
+        620
+      ],
+      "size": [
+        178,
+        62
+      ],
+      "sources": [
+        {
+          "path": "internal/search/acbs.go",
+          "line": 35
+        }
+      ]
+    },
+    {
+      "id": "radix",
+      "type": "backend",
+      "label": "Monotone Radix Heap",
+      "sublabel": "non-negative reduced cost",
+      "pos": [
+        780,
+        300
+      ],
+      "size": [
+        166,
+        62
+      ],
+      "sources": [
+        {
+          "path": "internal/search/radix.go",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "incumbent",
+      "type": "backend",
+      "label": "Incumbent U",
+      "sublabel": "best complete path",
+      "pos": [
+        1000,
+        190
+      ],
+      "size": [
+        150,
+        62
+      ],
+      "sources": [
+        {
+          "path": "internal/search/acbs.go",
+          "line": 254
+        }
+      ]
+    },
+    {
+      "id": "bound",
+      "type": "security",
+      "label": "Coupled Bound L2",
+      "sublabel": "minF + minB >= U proof",
+      "pos": [
+        1000,
+        410
+      ],
+      "size": [
+        150,
+        62
+      ],
+      "sources": [
+        {
+          "path": "internal/search/acbs.go",
+          "line": 155
+        }
+      ]
+    },
+    {
+      "id": "result",
+      "type": "external",
+      "label": "Exact Path",
+      "sublabel": "shortest distance + route",
+      "pos": [
+        1210,
+        300
+      ],
+      "size": [
+        140,
+        62
+      ],
+      "sources": [
+        {
+          "path": "internal/search/acbs.go",
+          "line": 158
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "query",
+      "to": "potential",
+      "label": "source + target",
+      "variant": "emphasis"
+    },
+    {
+      "from": "graph",
+      "to": "potential",
+      "label": "coordinates",
+      "route": "orthogonal-v"
+    },
+    {
+      "from": "potential",
+      "to": "frontF",
+      "label": "reduced keys",
+      "route": "orthogonal-v"
+    },
+    {
+      "from": "potential",
+      "to": "frontB",
+      "label": "reduced keys"
+    },
+    {
+      "from": "frontF",
+      "to": "radix",
+      "label": "push / pop"
+    },
+    {
+      "from": "frontB",
+      "to": "radix",
+      "label": "push / pop"
+    },
+    {
+      "from": "sched",
+      "to": "radix",
+      "label": "next chunk",
+      "variant": "dashed"
+    },
+    {
+      "from": "radix",
+      "to": "incumbent",
+      "label": "meeting label",
+      "route": "orthogonal-v"
+    },
+    {
+      "from": "radix",
+      "to": "bound",
+      "label": "frontier minima"
+    },
+    {
+      "from": "incumbent",
+      "to": "bound",
+      "label": "U",
+      "variant": "security",
+      "route": "orthogonal-v"
+    },
+    {
+      "from": "bound",
+      "to": "result",
+      "label": "stop, proven",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Termination",
+      "items": [
+        "The stop test compares the sum of the two frontier minima against the incumbent",
+        "That sum reduces to gF + gB, which is the known g-bound",
+        "This is Siag et al. IJCAI 2023 bound B3, not a new bound"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "What Is Tuned",
+      "items": [
+        "The scheduler decides which frontier receives the next edge-work chunk",
+        "It never changes the potential, the incumbent or the stop test",
+        "The aegis-static ablation removes only the scheduler"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Measured",
+      "items": [
+        "Real OSM networks: Tokyo and Osaka, distance and travel-time metrics",
+        "Every query returned an exact shortest path",
+        "The gain shrinks as the geographic bound carries less information"
+      ]
+    }
+  ]
+}
