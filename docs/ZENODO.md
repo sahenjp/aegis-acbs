@@ -79,7 +79,7 @@ observed traffic, and turn restrictions not modelled.
 | Publication date | the date of the deposit |
 | Related identifier | `https://github.com/sahenjp/aegis-acbs` (is supplement to / is version of) |
 | Related identifier | `https://github.com/sahenjp/aegis-acbs/releases/tag/v0.2.1` (is identical to) |
-| Related identifier | commit `COMMIT_PLACEHOLDER` (is version of) |
+| Related identifier | commit `9499f2981b2eaf8bca789e92b77f54fd4bd7c20d` (is version of) |
 
 ## Keywords
 
