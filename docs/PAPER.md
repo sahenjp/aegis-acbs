@@ -113,7 +113,7 @@ bound B3.
 
 This distinction matters twice over. It removes the claim that ACBS reuses a
 known bound, which is a claim we cannot support; and it explains the failure
-recorded in Section 5.4, where deriving the f-bound and the b-bound from
+recorded in Section 5.5, where deriving the f-bound and the b-bound from
 frontier nodes and converting them into reduced units produced values above the
 true optimum.
 
@@ -191,7 +191,70 @@ A weak lower bound is only useful if it remains a valid one, so admissibility
 was checked directly on the travel-time graph. Across 80 sampled source-target
 pairs, the geographic bound never exceeded the exact shortest-path distance.
 
-### 5.3 Where the advantage goes away
+### 5.3 Where the advantage comes from
+
+A speedup can come from expanding fewer nodes, or from doing cheaper work per
+node. The two matter differently to anyone trying to reproduce or extend the
+result, so they are separated here.
+
+The measurements below are on the Tokyo distance graph, against bidirectional
+Dijkstra, over the same 300 queries.
+
+| Algorithm | Median time | Median expanded | ns per expanded node |
+|---|---:|---:|---:|
+| bidirectional Dijkstra | 61.60 ms | 414,234 | 141.3 |
+| ACBS | 9.77 ms | 46,083 | 208.3 |
+
+The total speedup is 6.31x, and it factors into two terms.
+
+```
+6.31x = 8.99x (fewer expansions) * 0.70x (higher per-node cost)
+```
+
+**ACBS buys its speed by expanding far fewer nodes, and it pays for that with 43
+percent more work per node.** Bidirectional Dijkstra expands nine times as many
+nodes, but each one is cheaper to process.
+
+Per-node cost is duration divided by expanded nodes, so it mixes the cost of a
+pop, the cost of the edges scanned out of that node, and the fixed setup of a
+query. ACBS does more per node than a plain Dijkstra loop: it evaluates the
+potential at each relaxed neighbour, maintains an efficiency score per
+direction, and decides direction and budget at chunk boundaries. None of that
+appears in a bidirectional Dijkstra inner loop. The numbers say that overhead is
+real and measurable, and that it is still worth paying.
+
+This decomposition also explains why ACBS does poorly on a uniform lattice. On a
+lattice the expansion advantage largely evaporates, so the per-node penalty stays
+while the benefit it was paying for does not.
+
+The distinction is not new to the field. Wang et al. (2025), following Siag et al.
+(2023), recommend BAE* as the default for the consistent-heuristic case on the
+grounds that it strikes "a good balance between node expansions and runtime
+across different domains and heuristics". Treating the two as separate quantities
+is therefore the convention, and this section reports them separately for that
+reason.
+
+#### By query class
+
+The advantage is not uniform across query lengths. It is weakest on the shortest
+queries.
+
+| Query class | n | ACBS median | bidirectional Dijkstra | Speedup | ACBS faster on |
+|---|---:|---:|---:|---:|---:|
+| local | 100 | 0.19 ms | 0.51 ms | 2.72x | 93% |
+| random | 100 | 9.77 ms | 61.60 ms | 6.31x | 100% |
+| regional | 100 | 34.75 ms | 116.77 ms | 3.36x | 100% |
+
+Local queries gain least because at that scale the fixed cost of setting up the
+search is a large share of the total, and there is little room for a better
+expansion order to show. Regional queries gain less than random ones even though
+they are longer: both frontiers sweep a wider area, and the asymmetry the
+scheduler exploits is less pronounced.
+
+The 93 percent figure on local queries is the honest headline for that class.
+Seven queries out of a hundred do not beat bidirectional Dijkstra at all.
+
+### 5.4 Where the advantage goes away
 
 The gain depends on the metric. To isolate that dependence, a 1,000,000-node
 uniform lattice was re-weighted so that the same topology carries progressively
@@ -219,7 +282,7 @@ report the same direction in their own experiments, with their MEET algorithm
 roughly on par with A* on one grid map and about twice as slow on another where
 the heuristics are less informative.
 
-### 5.4 Do more bounds help?
+### 5.5 Do more bounds help?
 
 Sections 5.1 through 5.3 measure the speed of ACBS but say nothing about whether
 its stopping condition can be tightened. This section reports an attempt to do
@@ -286,7 +349,7 @@ been measured.
   ranking, but absolute distances here are optimistic.
   These graphs are a performance test bed, not a validation of routing
   correctness.
-- Only one stopping condition is consulted. Section 5.4 records that both
+- Only one stopping condition is consulted. Section 5.5 records that both
   attempts to widen it were unsound and were reverted or reduced, so whether a
   sound multi-bound condition would help is unknown.
 - **The scheduler itself is not specified in this draft.** It is the only
@@ -295,6 +358,12 @@ been measured.
   can be evaluated by anyone else.
 - Travel-time results use a speed model derived from `maxspeed` tagging, not
   observed traffic.
+- Timings are medians over repeated interleaved runs on one machine. The
+  per-node cost in Section 5.3 mixes pop cost, edge scanning and per-query
+  setup, so it is an aggregate rather than a profile of where the time goes.
+- The query classes are defined by the harness, and the class boundaries are not
+  varied here. The weakness on local queries (93 percent win rate) is not
+  investigated further.
 
 ## 7. Reproducing
 
