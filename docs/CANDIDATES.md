@@ -87,7 +87,7 @@ another algorithm is denied: there is no preprocessing anywhere, no landmark or
 distance tables, the same `*graph.Graph` object and query set are used, and
 steady-state allocation is 0 B per query for all of them.
 
-Two caveats that must accompany any comparison:
+Two caveats must accompany any comparison of these numbers.
 
 1. **A\* and CATCH use the geographic lower bound; MEET, bidirectional Dijkstra
    and PB-Buckets do not.** Both groups are legitimate, but they are not a
@@ -106,7 +106,7 @@ Two caveats that must accompany any comparison:
 ## The 1M question: is ACBS's large-graph win real?
 
 A single measurement suggested ACBS was the fastest algorithm at 1M nodes. It
-was re-measured independently, and the answer is **no — ACBS is not fastest, and
+was re-measured independently. The answer is **no: ACBS is not fastest, and
 the apparent win was not an ACBS effect at all.**
 
 ### The median was misleading
@@ -114,7 +114,7 @@ the apparent win was not an ACBS effect at all.**
 The rerun covered three seeds on the uniform lattice (`grid-1m`, 1,000,000
 nodes, 2,596,627 edges, 200 queries, 5 repeats, interleaved). The ranking by
 median was identical on all three seeds, which is where the earlier claim came
-from. But a paired comparison of the same queries shows the opposite:
+from. A paired comparison of the same queries shows the opposite.
 
 | Seed | Dijkstra | bidirectional Dijkstra | ACBS | paired ACBS/bidirectional | ACBS wins / loses |
 |---|---:|---:|---:|---:|---:|
@@ -138,7 +138,7 @@ scheduler.**
 ### It decays monotonically and reverses
 
 The same 1M topology was re-weighted to weaken the heuristic while holding node
-count, edge count and shape fixed:
+count, edge count and shape fixed, and measured again.
 
 | Graph | heuristicStrength | paired ACBS/bidirectional | result |
 |---|---:|---:|---|
