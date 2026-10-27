@@ -164,6 +164,10 @@ func Run(ctx context.Context, g *graph.Graph, source, target int, alg Algorithm)
 		r, err = catchR(ctx, g, source, target)
 	case Meet:
 		r, err = meet(ctx, g, source, target)
+	case MultiBound:
+		r, err = multiBound(ctx, g, source, target)
+	case MultiboundStatic:
+		r, err = multiboundStatic(ctx, g, source, target)
 	default:
 		return Result{}, fmt.Errorf("unknown algorithm %q", alg)
 	}
