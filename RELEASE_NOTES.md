@@ -1,37 +1,49 @@
-# Aegis ACBS v0.1.0
+# Aegis ACBS v0.2.0
 
-`v0.1.0` is the first public release of Aegis Coupled-Bound Search, an exact bidirectional shortest-path research implementation for weighted directed road graphs.
+`v0.2.0` adds real-road-network measurements, a paper draft, and the honest
+negative results behind them. The default `aegis` search is unchanged from
+v0.1.0.
 
-## Included in this release
+## Measured on real road networks
 
-- The adaptive `aegis` search and the `aegis-static` scheduler ablation.
-- OSM XML, DIMACS, and Aegis binary-graph import support.
-- Route, benchmark, stress, diagnosis, isolated replay, trigger profiling, and matrix aggregation commands.
-- JSON, CSV, and self-contained HTML reports.
-- Linux amd64/arm64, Windows amd64, and macOS amd64 builds.
-- SHA-256 checksums, source archives, a Git bundle, and a CycloneDX SBOM.
+Tokyo (1,098,173 nodes) and Osaka (748,903 nodes) from OpenStreetMap, distance
+and travel-time metrics, every query exact:
 
-## Published evidence
+| City | Metric | ACBS vs bidirectional Dijkstra | Paired |
+|---|---|---:|---:|
+| Tokyo | distance | 8.64x | 390 of 400 |
+| Osaka | distance | 6.59x | 288 of 300 |
+| Tokyo | travel time | 3.46x | 252 of 300 |
+| Osaka | travel time | 3.39x | 223 of 300 |
 
-The repository includes the raw artifacts from a 10,000-query Tokyo travel-time graph experiment:
+The advantage depends on how much information the geographic lower bound
+carries. On a synthetic uniform lattice it disappears and then reverses. That
+reversal is reported in the paper rather than left out.
 
-- 10,000/10,000 shortest-path distances matched Dijkstra.
-- 11 queries crossed the predefined meaningful-slowdown threshold in the initial suite.
-- Isolated replay retained one adaptive-scheduler tail and one persistent classical tail; nine cases did not reproduce.
-- Three connection-guard candidates were rejected by the predefined acceptance gate.
-- Whole-suite profiling found one same-suite checkpoint rule matching the scheduler tail with no observed false positives.
+## What is claimed, and what is not
 
-The checkpoint rule remains diagnostic. It was discovered and evaluated on the same dataset and is not part of the default scheduler.
+The termination rule is **not new**. `docs/PAPER.md` derives it, shows it reduces
+to `U <= gF + gB`, and identifies it as bound B3 in the enumeration of Siag et
+al. (IJCAI 2023). The scheduler that decides which frontier receives the next
+edge-work chunk is the only candidate contribution, and the paper records that
+its distinctness from prior expansion policies is unresolved.
 
-See [Tokyo evidence](docs/TOKYO_EVIDENCE.md) and `research/tokyo-time-2026-07-18/`.
+## Negative results, recorded
 
-## Validation and release controls
+Three further exact searches (MEET, PB-Buckets, CATCH) and a multi-bound
+experiment were implemented and measured. None beat bidirectional Dijkstra.
+`docs/CANDIDATES.md` records each attempt, the defects found in it, and how it
+was resolved, including one variant whose "speedup" was an artifact of an
+unsound termination condition that returned wrong answers.
 
-- CI runs on Linux, Windows, and macOS.
-- Go 1.23 compatibility and the current Go toolchain are tested.
-- Linux race detection, `go vet`, formatting, cross-build, shell syntax, and Python syntax checks are included.
-- Release publication verifies the imported Tokyo artifacts before creating a tag or uploading assets.
+## Limitations
 
-## Scope
+Two cities, one machine. Turn restrictions are not modelled; the Tokyo box
+contains 2,089 of them, which is 0.092 percent of directed edges. Travel-time
+costs use a speed model derived from `maxspeed` tagging, not observed traffic.
 
-This release is intended for reproducible review and independent testing. It does not establish universal performance superiority, universal correctness over every possible graph, academic novelty, or generalization of the Tokyo diagnostic trigger.
+## Reproducing
+
+`docs/REPRODUCING.md` gives the bounding boxes, seeds, inspection values that
+identify a matching extract, and a check that compares per-query distances
+instead of trusting the harness correctness flag.

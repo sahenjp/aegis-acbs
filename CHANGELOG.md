@@ -2,6 +2,33 @@
 
 Public semantic versioning starts at `v0.1.0`. Earlier numbered tags were private research iterations and are not part of the public release series.
 
+## v0.2.0
+
+- Measure ACBS on real OpenStreetMap road networks for Tokyo (1,098,173 nodes,
+  2,262,568 directed edges) and Osaka (748,903 nodes, 1,575,615 edges), under
+  both a distance metric and a travel-time metric. Every query returned an exact
+  shortest path.
+- On distance, ACBS finished ahead of bidirectional Dijkstra on 390 of 400 Tokyo
+  queries (8.64x by median) and 288 of 300 Osaka queries (6.59x).
+- On travel time the gains were 3.46x and 3.39x. The advantage shrinks as the
+  geographic lower bound carries less information, and on a synthetic uniform
+  lattice it disappears entirely.
+- Add `docs/PAPER.md`, a draft that derives the termination rule, identifies it
+  as the known g-bound (bound B3 of Siag et al., IJCAI 2023), and states that no
+  novelty is claimed for it.
+- Add `docs/CANDIDATES.md` recording three further exact search variants
+  (MEET, PB-Buckets, CATCH) and a multi-bound experiment. None beat
+  bidirectional Dijkstra; the reasons and the defects found along the way are
+  documented rather than omitted.
+- Add `docs/REPRODUCING.md` with bounding boxes, seeds, inspection values and an
+  exactness check that does not trust the harness flag, because the raw reports
+  for these runs are too large to commit.
+- Add an architecture diagram of the search under `docs/figures`.
+- Add `internal/graph/turn.go`, an OSM turn-restriction parser, and quantify the
+  2,089 restrictions the current import drops in the Tokyo box.
+- Move the Go module path and links to `sahenjp/aegis-acbs`.
+- Credit the work to the pen name `sahen`, and add `CITATION.cff` and `AUTHORS`.
+
 ## v0.1.0
 
 - Publish the first public research release without changing the default ACBS search.
