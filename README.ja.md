@@ -158,7 +158,7 @@ bin/aegis benchmark \
 
 このソフトウェアを引用する場合は、次のように書いてください。
 
-    sahen. Aegis Coupled-Bound Search (ACBS), version 0.2.0.
+    sahen. Aegis Coupled-Bound Search (ACBS), version 0.2.1.
     https://github.com/sahenjp/aegis-acbs
 
 機械可読なメタデータは [CITATION.cff](CITATION.cff) にあります。Zenodo の登録が済んだら、concept DOI をここに追記します。

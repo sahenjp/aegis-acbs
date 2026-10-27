@@ -2,6 +2,31 @@
 
 Public semantic versioning starts at `v0.1.0`. Earlier numbered tags were private research iterations and are not part of the public release series.
 
+## v0.2.1
+
+- Correct three errors in `docs/PAPER.md` that an independent review found.
+- The abstract overstated the baseline: it reported the speedup against plain
+  unidirectional Dijkstra (8.64x) as if it were the speedup against
+  bidirectional Dijkstra. Measured against bidirectional Dijkstra the ratios are
+  6.04 (Tokyo distance), 4.38 (Osaka distance), 1.82 and 1.54 (travel time).
+- The paper claimed the termination rule reduces to the g-bound, bound B3 of
+  Siag et al. That derivation only holds when both frontiers are read at the same
+  node. The rule is a standard reduced-cost bidirectional rule and is not B3.
+  Section 3 now derives it correctly and records the earlier error.
+- A table gave Dijkstra and bidirectional Dijkstra the same relaxed-edge count.
+  The correct value for Dijkstra is 1,091,302.
+- Section 5.4 is rewritten after re-reading the code: `multibound` assigns the
+  reduced-key sum to the f-bound and b-bound slots as well, so it is not a
+  multi-bound implementation. The section now says so and marks the question
+  open.
+- Apply English corrections from the same review, including tense consistency,
+  `shortest-path` as a compound adjective, a defined epsilon, and replacement of
+  "saturates" (which in mathematics means equality holds, the opposite of the
+  intended meaning).
+- Add to the limitations that the scheduler, the only candidate contribution, is
+  not specified in the draft.
+- Add `docs/ZENODO.md` with the deposit metadata.
+
 ## v0.2.0
 
 - Measure ACBS on real OpenStreetMap road networks for Tokyo (1,098,173 nodes,

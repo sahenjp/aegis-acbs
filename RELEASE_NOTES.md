@@ -1,49 +1,50 @@
-# Aegis ACBS v0.2.0
+# Aegis ACBS v0.2.1
 
-`v0.2.0` adds real-road-network measurements, a paper draft, and the honest
-negative results behind them. The default `aegis` search is unchanged from
-v0.1.0.
+`v0.2.1` corrects errors in the paper draft. **No code changed**; the search
+implementation is identical to v0.2.0.
 
-## Measured on real road networks
+## Why this release exists
 
-Tokyo (1,098,173 nodes) and Osaka (748,903 nodes) from OpenStreetMap, distance
-and travel-time metrics, every query exact:
+An independent review of `docs/PAPER.md` found three errors that would have made
+the paper unpublishable. All three were corrected before archiving.
 
-| City | Metric | ACBS vs bidirectional Dijkstra | Paired |
+### 1. The abstract overstated the baseline
+
+It reported a speedup of 8.64x against bidirectional Dijkstra. That figure is the
+ratio against **plain unidirectional** Dijkstra. Against bidirectional Dijkstra:
+
+| City | Metric | vs bidirectional Dijkstra | vs unidirectional Dijkstra |
 |---|---|---:|---:|
-| Tokyo | distance | 8.64x | 390 of 400 |
-| Osaka | distance | 6.59x | 288 of 300 |
-| Tokyo | travel time | 3.46x | 252 of 300 |
-| Osaka | travel time | 3.39x | 223 of 300 |
+| Tokyo | distance | 6.04x | 8.64x |
+| Osaka | distance | 4.38x | 6.59x |
+| Tokyo | travel time | 1.82x | 3.46x |
+| Osaka | travel time | 1.54x | 3.39x |
 
-The advantage depends on how much information the geographic lower bound
-carries. On a synthetic uniform lattice it disappears and then reverses. That
-reversal is reported in the paper rather than left out.
+### 2. The termination rule is not bound B3
 
-## What is claimed, and what is not
+An earlier draft claimed the stopping rule reduces to the g-bound (bound B3 of
+Siag et al., IJCAI 2023). The derivation assumed the potential cancels between
+the two frontier minima, which only holds when both are read at the same node.
+The rule is a standard reduced-cost bidirectional rule, valid because reduced
+costs are non-negative, but it is not B3.
 
-The termination rule is **not new**. `docs/PAPER.md` derives it, shows it reduces
-to `U <= gF + gB`, and identifies it as bound B3 in the enumeration of Siag et
-al. (IJCAI 2023). The scheduler that decides which frontier receives the next
-edge-work chunk is the only candidate contribution, and the paper records that
-its distinctness from prior expansion policies is unresolved.
+### 3. A table had a duplicated number
 
-## Negative results, recorded
+Dijkstra and bidirectional Dijkstra were both listed with 818,508 relaxed edges,
+which cannot be true when bidirectional search expands 120,000 fewer nodes. The
+correct value for Dijkstra is 1,091,302.
 
-Three further exact searches (MEET, PB-Buckets, CATCH) and a multi-bound
-experiment were implemented and measured. None beat bidirectional Dijkstra.
-`docs/CANDIDATES.md` records each attempt, the defects found in it, and how it
-was resolved, including one variant whose "speedup" was an artifact of an
-unsound termination condition that returned wrong answers.
+## What this means for the claims
 
-## Limitations
+The honest summary after these corrections is narrower than v0.2.0 implied:
+ACBS is 6.04x faster than bidirectional Dijkstra on Tokyo distance, 4.38x on
+Osaka distance, and 1.5-1.8x on travel time. The stopping rule is not novel and
+is not the bound the paper first named. The scheduler remains the only candidate
+contribution, and **the draft does not yet specify it**, which is recorded in the
+limitations.
 
-Two cities, one machine. Turn restrictions are not modelled; the Tokyo box
-contains 2,089 of them, which is 0.092 percent of directed edges. Travel-time
-costs use a speed model derived from `maxspeed` tagging, not observed traffic.
+## Unchanged
 
-## Reproducing
-
-`docs/REPRODUCING.md` gives the bounding boxes, seeds, inspection values that
-identify a matching extract, and a check that compares per-query distances
-instead of trusting the harness correctness flag.
+The code, the tests, and the released binaries. `v0.2.0` remains valid for
+anyone who wants the implementation; this release is the paper with its numbers
+corrected.

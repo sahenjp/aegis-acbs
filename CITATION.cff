@@ -17,7 +17,7 @@ authors:
 license: MIT
 repository-code: "https://github.com/sahenjp/aegis-acbs"
 url: "https://github.com/sahenjp/aegis-acbs"
-version: "0.2.0"
+version: "0.2.1"
 keywords:
   - shortest path
   - bidirectional search

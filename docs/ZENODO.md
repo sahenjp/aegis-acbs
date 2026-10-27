@@ -14,7 +14,7 @@ title and description below into the Zenodo record editor.
    connected account.
 2. The integration archives **GitHub releases**, not tags and not drafts. A
    release created as a draft, or a tag with no release, will not be picked up.
-   `v0.2.0` is published, not a draft, so it should archive on the switch.
+   `v0.2.1` is published, not a draft, so it should archive on the switch.
 3. After the deposit appears, open the record and check the files, the title, the
    creators and the license against this file.
 4. Zenodo issues two identifiers. The **concept DOI** covers all versions and is
@@ -74,12 +74,12 @@ observed traffic, and turn restrictions not modelled.
 | Field | Value |
 |---|---|
 | Resource type | Software |
-| Version | `0.2.0` |
+| Version | `0.2.1` |
 | License | MIT |
 | Publication date | the date of the deposit |
 | Related identifier | `https://github.com/sahenjp/aegis-acbs` (is supplement to / is version of) |
-| Related identifier | `https://github.com/sahenjp/aegis-acbs/releases/tag/v0.2.0` (is identical to) |
-| Related identifier | commit `1db2afcbf33e8188af333d698c66c0b1ffb18d4e` (is version of) |
+| Related identifier | `https://github.com/sahenjp/aegis-acbs/releases/tag/v0.2.1` (is identical to) |
+| Related identifier | commit `COMMIT_PLACEHOLDER` (is version of) |
 
 ## Keywords
 
@@ -94,7 +94,7 @@ OpenStreetMap
 
 ## What the record should contain
 
-Zenodo archives the release tarball by default. The `v0.2.0` release also carries
+Zenodo archives the release tarball by default. The `v0.2.1` release also carries
 29 assets, including source archives, four platform binaries, a CycloneDX SBOM,
 SHA-256 checksums, and the raw Tokyo evidence bundle. The SBOM and the checksums
 are the ones that make the deposit verifiable; if only one file is kept, keep the
