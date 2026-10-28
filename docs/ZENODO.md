@@ -74,11 +74,11 @@ observed traffic, and turn restrictions not modelled.
 | Field | Value |
 |---|---|
 | Resource type | Software |
-| Version | `0.3.0` |
+| Version | `0.4.0` |
 | License | MIT |
 | Publication date | the date of the deposit |
 | Related identifier | `https://github.com/sahenjp/aegis-acbs` (is supplement to / is version of) |
-| Related identifier | `https://github.com/sahenjp/aegis-acbs/releases/tag/v0.3.0` (is identical to) |
+| Related identifier | `https://github.com/sahenjp/aegis-acbs/releases/tag/v0.4.0` (is identical to) |
 | Related identifier | commit `9499f29 (v0.2.1); the v0.3.0 tag names its own commit` (is version of) |
 
 ## Keywords
@@ -94,7 +94,7 @@ OpenStreetMap
 
 ## What the record should contain
 
-Zenodo archives the release tarball by default. The `v0.3.0` release also carries
+Zenodo archives the release tarball by default. The `v0.4.0` release also carries
 29 assets, including source archives, four platform binaries, a CycloneDX SBOM,
 SHA-256 checksums, and the raw Tokyo evidence bundle. The SBOM and the checksums
 are the ones that make the deposit verifiable; if only one file is kept, keep the
