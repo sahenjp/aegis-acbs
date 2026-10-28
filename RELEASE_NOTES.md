@@ -1,34 +1,51 @@
-# Aegis ACBS v0.2.2
+# Aegis ACBS v0.3.0
 
-`v0.2.2` completes the paper draft and documents its remaining gaps. **No search
-code changed** from v0.2.1; this release is documentation plus one test.
+`v0.3.0` scopes the contribution honestly and measures its own scheduler. The
+shipped `aegis` search is unchanged; four new benchmark-only ablation variants
+were added.
 
-## Scheduler specification (Section 3)
+## What is new
 
-The scheduler, the only candidate contribution, is now specified in full:
-per-direction state, the work and gain measure
-(`work = relaxed + 4*expanded + 2*queueGrowth`), the exponential moving average,
-the direction rules with their 10 percent dead band and periodic alternation,
-and the budget schedule with all constants. Every constant was checked against
-`internal/search/acbs.go`, and a new test verifies the work formula and the
-budget set against 156 real traced scheduler chunks.
+**The scheduler is now specified and ablated.** Section 3 of the paper gives the
+full scheduler algorithm (state, work and gain measure, direction rules, budget
+schedule) with every constant checked against the code, plus a test verifying
+the work formula against 156 real traced chunks. Section 3.6 maps ACBS onto the
+three-decision framework of Siag et al. (IJCAI 2023): the scheduler is an
+instance of their open direction hook at chunk granularity, with work-normalized
+efficiency measurement and closed-loop allocation. Its side-selection pieces are
+coarse-grained variants of Pohl's cardinality and alternating policies.
 
-## Speedup decomposition (Section 6.3)
+**Component ablation, two seeds, real data.** Four variants each remove exactly
+one scheduler component:
 
-Against bidirectional Dijkstra on Tokyo distance, the 6.30x total speedup
-factors as 9.19x from expanding fewer nodes times 0.68x from a 46 percent higher
-per-node cost. Per-query-class results are new: local queries gain only 2.69x
-and ACBS wins 93 percent of them.
+| Algorithm | seed 1010 median | seed 7 median |
+|---|---:|---:|
+| ACBS (production) | 13.23 ms | 13.87 ms |
+| aegis-static | 14.85 ms | 17.07 ms |
+| aegis-nodeadband | 12.37 ms | 14.31 ms |
+| aegis-noalternation | 13.22 ms | 14.52 ms |
+| aegis-instant | 12.32 ms | 13.95 ms |
+| aegis-nomultiplier | 12.65 ms | 14.30 ms |
 
-An internal audit caught this section computing on a subset that dropped
-duplicate query pairs, and mixing two median conventions. The corrected numbers
-differ by up to four points in the proportions but not in the direction of any
-conclusion. The paper now states which median convention it uses and why Table
-6.1 and Section 6.3 quote different ratios for the same comparison.
+All exact (300/300 against Dijkstra on both seeds). Two stable findings: the
+adaptive direction choice is the productive component (production beats the
+static ablation by 10.9 and 18.7 percent, consistent across seeds), and the
+tuning components - dead band, EMA smoothing, budget multipliers - show no
+consistent effect across seeds. A corollary is recorded but not acted on: a
+lighter scheduler without the dead band and multipliers might dominate the
+shipped one; changing the default requires the release gates.
 
-## What the paper does not claim
+## Scope of the claim
 
-The stopping rule is a standard reduced-cost bidirectional rule, not bound B3,
-and the scheduler has not been compared against any other policy beyond the
-static ablation. Both are stated in the limitations. The v0.2.1 release notes
-carry the fuller list of what an independent review corrected.
+The stopping rule is a standard reduced-cost bidirectional rule. The scheduler
+is an instance of the direction hook that Siag et al.'s framework leaves open,
+with elements absent from their published framework (chunk granularity,
+work-normalized efficiency, closed-loop budget allocation); its side-selection
+pieces are coarse-grained variants of known policies. Whether the design choices
+are good is answered by measurement above, and the honest answer is: only the
+direction switching is, and the refinements are neutral on this workload.
+
+## Unchanged
+
+Tokyo and Osaka measurements from v0.2.2, the defect records, and the
+reproduction guide.

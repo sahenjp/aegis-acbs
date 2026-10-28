@@ -2,6 +2,27 @@
 
 Public semantic versioning starts at `v0.1.0`. Earlier numbered tags were private research iterations and are not part of the public release series.
 
+## v0.3.0
+
+- Add four scheduler-component ablations as exact benchmark algorithms
+  (`aegis-nodeadband`, `aegis-noalternation`, `aegis-instant`,
+  `aegis-nomultiplier`). Each removes exactly one scheduler component while the
+  search, the potential, and the stopping rule stay identical; all verified
+  300/300 against Dijkstra on real Tokyo data.
+- Add paper Section 3.6: ACBS mapped onto the three-decision framework of Siag
+  et al. (IJCAI 2023). The scheduler is an instance of their open direction hook
+  at chunk granularity; its side-selection pieces are coarse-grained variants of
+  Pohl's cardinality and alternating policies, which Siag et al. already
+  evaluated.
+- Add paper Section 6.6: component ablation on two seeds. The adaptive direction
+  choice is the productive component (production ACBS beat the static ablation
+  by 10.9 and 18.7 percent on the two seeds, consistently). The tuning
+  components (dead band, EMA smoothing, budget multipliers) showed no consistent
+  effect across seeds.
+- Scope the novelty claim accordingly and update the limitations.
+- The default `aegis` search is unchanged; changing it requires the release
+  gates.
+
 ## v0.2.2
 
 - Add Section 3 of the paper: a full specification of the adaptive scheduler (per-direction state, work and gain measure, direction rules, budget schedule), with every constant checked against internal/search/acbs.go.
