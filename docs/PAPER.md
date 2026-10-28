@@ -10,8 +10,8 @@ place.
 We describe Aegis Coupled-Bound Search (ACBS), an exact point-to-point
 shortest-path algorithm for weighted directed road graphs. ACBS advances a
 forward and a reverse frontier under a single admissible potential and stops when
-the sum of the two frontier minimum priority keys reaches the best complete path
-found. That stopping rule is a standard reduced-cost bidirectional rule, not a
+the sum of the frontier minimum priority keys reaches the cost of the best
+complete path found. That stopping rule is a standard reduced-cost bidirectional rule, not a
 contribution, and Section 4 explains why it is also not the g-bound that an
 earlier draft claimed. What ACBS adds is a scheduler that decides which frontier
 receives the next chunk of edge work, using the observed rise in the coupled
@@ -20,13 +20,12 @@ lower bound per unit of work.
 We measured ACBS against Dijkstra, bidirectional Dijkstra, and A* on real
 OpenStreetMap networks for Tokyo (1,098,173 nodes) and Osaka (748,903 nodes),
 under both a distance metric and a travel-time metric. Every query returned an
-exact shortest path. Against bidirectional Dijkstra, the median speedup was 6.04
-times in Tokyo and 4.38 times in Osaka on distance, and 1.82 and 1.54 times on
-travel time. Against plain unidirectional Dijkstra the ratios are larger, 8.64 and
-6.59 on distance; the tables report both baselines so the two are not confused.
+exact shortest path. Against bidirectional Dijkstra, the median speedup was 6.04x in Tokyo and 4.38x in Osaka on distance, and
+1.82x and 1.54x on travel time. Against plain unidirectional Dijkstra, the ratios were larger: 8.64x and
+6.59x on distance; the tables report both baselines so the two are not confused.
 The advantage shrinks as the geographic lower bound carries less information, and
 on a synthetic uniform lattice it disappears entirely. We report that reversal
-rather than omitting it.
+rather than omit it.
 
 ![ACBS search structure](figures/acbs-search.png)
 
@@ -36,7 +35,8 @@ This note reports measurements rather than a new algorithm. Two concepts must be
 distinguished.
 
 **Not new: the termination rule.** ACBS terminates when the sum of the two
-frontier minimum priority keys reaches the incumbent, both in reduced units.
+frontier minimum priority keys reaches the incumbent cost, with both quantities
+expressed in reduced units.
 Section 4 shows that this is a standard reduced-cost bidirectional rule and that
 it is *not* the g-bound, contrary to what an earlier draft of this note asserted.
 Siag et al. (2023) enumerate seventeen non-dominated global bounds and prove that
@@ -47,14 +47,14 @@ earlier internal note described the rule as a contribution. It is not.
 **The candidate contribution: the scheduler.** Given a fixed potential and a
 fixed stopping rule, an exact bidirectional search still has freedom in how much
 edge work to give each frontier before reconsidering. ACBS measures, online, how
-much the coupled lower bound rose per unit of work in each direction, and
+much the coupled lower bound has risen per unit of work in each direction, and
 allocates the next chunk accordingly. The ablation that removes only the
 scheduler, keeping the potential and the stopping rule identical, is available
 as `aegis-static`.
 
-Where that scheduler sits relative to prior work is now bounded rather than
+How the scheduler relates to prior work is now well-delineated rather than
 open. Section 3.6 maps ACBS onto the three-decision framework of Siag et al.
-(2023): the scheduler is an instance of their open direction hook, at coarser
+(2023): the scheduler is an instance of their open direction hook, at a coarser
 granularity and with a work-normalized score, and its side-selection components
 are coarse-grained variants of Pohl's cardinality and alternating policies.
 Section 6.6 ablates the scheduler's components on real data: the productive part
@@ -63,10 +63,10 @@ EMA, budget multipliers) show no consistent effect across seeds.
 
 ## 2. The search
 
-For source s, target t, and node v, the following hold.
+For a source s, a target t, and a node v, the following hold.
 
-- `g_F(v)` is the best known cost from s to v, `g_B(v)` the best known cost
-  from v to t.
+- `g_F(v)` is the best known cost from s to v, and `g_B(v)` is the best known
+  cost from v to t.
 - `h_F(v)` is an admissible lower bound on the cost from v to t, and `h_B(v)`
   the corresponding bound from s to v. Both are derived from Earth-chord
   distance scaled by a conservative minimum cost per metre, so both are zero
@@ -86,9 +86,9 @@ This is the only component this note offers as a contribution, so it is
 specified here in enough detail to reimplement. Section 4 then shows that the
 stopping rule, by contrast, is standard.
 
-The search proceeds in **chunks**. At the start of each chunk it chooses a
-direction and a budget, expands up to that budget, then updates its estimate of
-how productive each direction has been.
+The search proceeds in **chunks**. At the start of each chunk, the scheduler chooses a direction and a budget,
+expands nodes up to that budget, and then updates its estimate of how
+productive each direction has been.
 
 ### 3.1 State
 
@@ -98,7 +98,8 @@ Two quantities are kept per direction, both integer scalars rather than arrays.
   bound rose per unit of work in direction D, scaled by 10^6.
 - `sampled_D`, false until direction D has completed at least one chunk.
 
-Plus `last`, the direction of the previous chunk, and `consecutive`, the number
+In addition, the scheduler maintains `last`, the direction of the previous
+chunk, and `consecutive`, the number
 of chunks taken in that same direction.
 
 ### 3.2 Work and gain
@@ -111,9 +112,9 @@ work = relaxedEdges + 4 * expandedNodes + 2 * queueGrowth
 ```
 
 where `queueGrowth` is the change in the sum of the two queue lengths, counted
-only when positive. Expanding a node is charged four times one relaxation, and
-growing the frontier is charged twice, so the measure reflects allocation and
-memory traffic rather than only relaxation count. The instantaneous score is
+only when positive. Expanding a node is charged as four relaxations, and growing the frontier is
+charged as two, so the measure reflects allocation and memory traffic rather
+than only the relaxation count. The instantaneous score is
 
 ```
 instant = 10^6 * dLB / work        (work is never 0)
@@ -136,13 +137,13 @@ The rules apply in priority order.
 3. If `score_F > 1.1 * score_B`, choose F. If `score_B > 1.1 * score_F`,
    choose B. The 10 percent margin is a dead band, so a small difference in the
    estimates does not flip the direction every chunk.
-4. Otherwise the estimates are close. Break the tie by the smaller frontier
-   minimum key, then by the smaller degree (out-degree forward, in-degree
-   reverse), then by the shorter queue, then F.
+4. Otherwise, the estimates are within the dead band. Break ties by choosing the
+   smaller frontier minimum key, then the smaller degree (out-degree forward,
+   in-degree reverse), then the shorter queue, and finally F.
 
-The last two rules are the same as the static ablation, so the adaptive
-scheduler only overrides them when the efficiency estimates differ by more than
-the dead band.
+Only the rule 4 tie-break order is shared with the static ablation. The static
+ablation skips rules 1 to 3 entirely and always follows the rule 4 order; the
+adaptive scheduler is the part that consults the efficiency estimates.
 
 ### 3.4 Choosing the budget
 
@@ -157,9 +158,9 @@ if score_other > 0 and score_chosen >= 4 * score_other: budget = 4 * base
 if an upper bound has been found and budget > 2 * base: budget = 2 * base
 ```
 
-The budget is edge work, not node count. A direction measured at twice the other
-gets twice the work, and one measured at four times gets four times as much,
-before the scheduler reconsiders. Once a complete path is known, the multiplier is capped
+The budget is measured in edge work, not node count. A direction measured at
+twice the efficiency of the other receives twice the work, and one measured at
+four times receives four times as much, before the scheduler reconsiders. Once a complete path is known, the multiplier is capped
 at two, because the remaining job is to raise the lower bound far enough to
 prove that path optimal, and alternating helps with that more than concentrating
 work does.
@@ -168,7 +169,7 @@ work does.
 
 `aegis-static` is identical except that it always uses `base` as the budget and
 skips rules 3.3.1 to 3.3.3, choosing directly by the tie-break order in 3.3.4.
-That is the comparison used in Section 1 and Section 6.5.
+That is the comparison used in Section 1 and Section 6.6.
 
 ### 3.6 Where the scheduler sits in the Siag et al. framework
 
@@ -224,15 +225,20 @@ min_{u in Open_F} k_F(u) + min_{w in Open_B} k_B(w) >= 2U + phi2(t) - phi2(s)
 ```
 
 (`internal/search/acbs.go`). Substituting `phi2(v) = h_F(v) - h_B(v)` and writing
-u and w for the two frontier minima gives
+u and w for the two frontier minima gives, exactly,
 
 ```
-k_F(u) + k_B(w) = 2(g_F(u) + g_B(w)) + h_F(t) - h_B(s) + (h_F(u) - h_B(u)) - (h_F(w) - h_B(w))
+k_F(u) + k_B(w) = 2(g_F(u) + g_B(w)) + phi2(t) - phi2(s) + phi2(u) - phi2(w)
 ```
 
-so the cancellation is exact only when u and w carry the same potential, which holds once the
-frontiers have met. Away from the meeting point the extra `(phi2(u) - phi2(w))` term
-remains.
+A node's bound to itself is zero, so `h_F(t) = 0` and `h_B(s) = 0`, and the
+frontier-independent part is `phi2(t) - phi2(s) = -(h_B(t) + h_F(s))`, generally
+not zero. The cross term `phi2(u) - phi2(w)` does not cancel either: u and w are
+distinct nodes, and their potentials would coincide only by numerical accident.
+An earlier draft of this section asserted that the potentials cancel once the
+frontiers have met; that was wrong. Meeting the frontiers only guarantees that an
+incumbent complete path exists, and the frontier minima keep advancing on
+different nodes.
 
 **This is not the g-bound, and an earlier draft of this section wrongly said it was.**
 The g-bound of Siag et al. (bound B3) is
@@ -248,7 +254,7 @@ carrying the smallest g. The reduced-key sum is therefore a lower bound of a
 different kind, valid because the reduced costs are non-negative, but it is not
 bound B3.
 
-This distinction matters twice over. It removes the claim that ACBS reuses a
+This distinction matters for two reasons. It removes the claim that ACBS reuses a
 known bound, which is a claim we cannot support; and it explains the failure
 recorded in Section 6.5, where deriving the f-bound and the b-bound from
 frontier nodes and converting them into reduced units produced values above the
@@ -270,7 +276,11 @@ All comparisons use the same graph object, the same query set, the same warmup,
 and an interleaved measurement order, with no preprocessing for any algorithm.
 Steady-state allocation is zero bytes per query for every algorithm. Results are
 reported as the median over repeated measurements and as a paired comparison of
-the same queries, because the two disagree on some graphs.
+the same queries, because the two disagree on some graphs. A median here is the
+nearest-rank 50th percentile over the query set: with an even number of queries,
+the lower of the two middle values. Every table in this note uses that
+convention, and one earlier draft mixed it with an interpolated median, which is
+recorded in Section 6.3.
 
 **Data.** OpenStreetMap extracts from Geofabrik, restricted to a box around the
 city centre and to ways that carry vehicle traffic, imported with the `car`
@@ -286,8 +296,9 @@ profile. The edge cost is `ceil(meters * 1000)` for the distance metric and
 `heuristicStrength` is the ratio of the minimum to the mean cost per metre. In
 mathematics a bound is *saturated* when equality holds, which is the opposite of
 what happens here, so the term is avoided. A travel-time metric makes the
-geographic bound much **looser**: to stay admissible it must assume the slowest
-possible speed everywhere, while real roads vary widely. That loses pruning
+geographic bound much **looser**: to stay admissible the bound may only divide
+straight-line distance by the fastest speed anywhere (the smallest cost per
+metre), while most roads are slower. That loses pruning
 power, which is why travel time is reported separately.
 
 ## 6. Results
@@ -399,13 +410,11 @@ the same algorithm on the same graph can differ by several percent because of
 which queries were drawn, which is exactly why Section 6.3 reports paired
 win counts alongside medians.
 
-A note on the median. The benchmark defines the median as the nearest-rank 50th
-percentile (the lower of the two middle values over 300 queries). An
-interpolated median gives slightly different values, for example 9.77 ms rather
-than 9.76 ms for ACBS. An earlier draft of this section mixed the two conventions
-and also dropped duplicate query pairs, which produced 6.31x and a per-node
-penalty of 43 percent; both figures were wrong in proportion, not in direction.
-The values above are reported in the benchmark's own convention throughout.
+Medians follow the Section 5 convention. An interpolated median would give
+9.77 ms rather than 9.76 ms for ACBS. An earlier draft of this section mixed the
+two conventions and also dropped duplicate query pairs, which produced 6.31x and
+a per-node penalty of 43 percent; both figures were wrong in proportion, not in
+direction.
 
 ### 6.4 Where the advantage goes away
 
@@ -413,7 +422,7 @@ The gain depends on the metric. To isolate that dependence, a 1,000,000-node
 uniform lattice was re-weighted so that the same topology carries progressively
 less geographic information.
 
-| heuristicStrength | ACBS vs bidirectional Dijkstra, paired |
+| heuristicStrength | Time ratio, ACBS / bidirectional Dijkstra |
 |---:|---:|
 | 0.996 | 1.001 (tied) |
 | 0.434 | 0.926 |
@@ -422,8 +431,10 @@ less geographic information.
 | 0.202 | 1.099 |
 | 0.096 | 1.203 |
 
-On the lattice the advantage is absent even at high heuristic strength and
-becomes a clear loss as the bound weakens. A uniform lattice rewards both
+In this table the ratio is ACBS time divided by bidirectional Dijkstra time, so
+values above 1.0 mean ACBS is slower - the inverse of the speedup columns in
+Tables 6.1 to 6.3. On the lattice the advantage is absent even at high heuristic
+strength and becomes a clear loss as the bound weakens. A uniform lattice rewards both
 frontiers about equally, so there is little asymmetry for a scheduler to exploit.
 Real road networks are irregular, and there the same scheduler keeps an
 advantage even when the bound is weak.
@@ -529,10 +540,11 @@ The production tuning - the parts of the scheduler that most distinguish it on
 paper - has no consistent effect across the two seeds, and the observed spread
 between the adaptive variants (about 8 percent) is within query-sampling noise.
 
-The corollary for the release is recorded rather than acted on: a lighter
-scheduler without the dead band and the multipliers might dominate the shipped
-one, but changing the default search requires the release gates, so both stay in
-the code and the question is left open.
+The corollary for the release is recorded rather than acted on: dropping the
+dead band and the multipliers leaves performance comparable - neither variant
+dominates production, since both were slower on seed 7 - and a simpler scheduler
+might be worth it for its own sake. Changing the default search requires the
+release gates, so both stay in the code and the question is left open.
 
 Final caveat: two seeds on one graph is thin evidence for "no effect". The
 honest statement is that no consistent effect was detected, not that none
