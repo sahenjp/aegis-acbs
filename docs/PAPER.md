@@ -12,7 +12,7 @@ shortest-path algorithm for weighted directed road graphs. ACBS advances a
 forward and a reverse frontier under a single admissible potential and stops when
 the sum of the two frontier minimum priority keys reaches the best complete path
 found. That stopping rule is a standard reduced-cost bidirectional rule, not a
-contribution, and Section 3 explains why it is also not the g-bound that an
+contribution, and Section 4 explains why it is also not the g-bound that an
 earlier draft claimed. What ACBS adds is a scheduler that decides which frontier
 receives the next chunk of edge work, using the observed rise in the coupled
 lower bound per unit of work.
@@ -215,7 +215,7 @@ the order in which work is performed, not from the test that ends the search.
 
 Second, Siag et al. observe that taking the maximum over several available
 bounds gives the tightest condition available. ACBS consults only one. Section
-5.4 reports what happened when we tested the obvious follow-up.
+6.5 reports what happened when we tested the obvious follow-up.
 
 ## 5. Method
 
