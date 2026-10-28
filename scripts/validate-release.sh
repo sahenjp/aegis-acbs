@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-[[ "$(cat VERSION)" == "0.2.1" ]] || {
+[[ "$(cat VERSION)" == "0.2.2" ]] || {
   echo "unexpected VERSION: $(cat VERSION)" >&2
   exit 1
 }
@@ -23,4 +23,4 @@ python3 scripts/check-release-evidence.py research/tokyo-time-2026-07-18
 bash -n scripts/*.sh
 python3 -m py_compile scripts/*.py
 
-echo "v0.2.1 release validation: PASS"
+echo "v0.2.2 release validation: PASS"

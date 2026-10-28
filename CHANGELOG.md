@@ -2,6 +2,13 @@
 
 Public semantic versioning starts at `v0.1.0`. Earlier numbered tags were private research iterations and are not part of the public release series.
 
+## v0.2.2
+
+- Add Section 3 of the paper: a full specification of the adaptive scheduler (per-direction state, work and gain measure, direction rules, budget schedule), with every constant checked against internal/search/acbs.go.
+- Add Section 6.3: a decomposition of the speedup into an expansion factor and a per-node cost factor, per-query-class results, and an explanation of why the advantage is weakest on short queries.
+- Correct Section 6.3 after a pre-publication audit recomputed every figure from the stored raw JSON: an earlier draft had computed the decomposition on a subset that dropped duplicate query pairs, and mixed two median conventions.
+- Add a test that verifies the section 3.2 work formula and the section 3.4 budget set against actual traced scheduler chunks (156 chunks on real data).
+- Record in the limitations that the scheduler has not been compared against any other policy beyond the static ablation.
 ## v0.2.1
 
 - Correct three errors in `docs/PAPER.md` that an independent review found.

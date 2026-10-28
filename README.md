@@ -197,7 +197,7 @@ Released under the [MIT License](LICENSE).
 
 If you cite this software, use:
 
-    sahen. Aegis Coupled-Bound Search (ACBS), version 0.2.1.
+    sahen. Aegis Coupled-Bound Search (ACBS), version 0.2.2.
     https://github.com/sahenjp/aegis-acbs
 
 Machine-readable metadata is in [CITATION.cff](CITATION.cff). A concept DOI
