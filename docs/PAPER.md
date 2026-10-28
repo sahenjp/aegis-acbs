@@ -390,7 +390,7 @@ the heuristics are less informative.
 
 ### 6.5 Do more bounds help?
 
-Sections 5.1 through 5.3 measure the speed of ACBS but say nothing about whether
+Sections 6.1 through 6.3 measure the speed of ACBS but say nothing about whether
 its stopping condition can be tightened. This section reports an attempt to do
 that, and why it did not produce the answer we wanted.
 
