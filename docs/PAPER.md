@@ -175,7 +175,7 @@ component ablations. Note the units: the chunk budget is counted in edge
 relaxations (the loop stops when `relaxedEdges >= budget`), not against the
 composite work measure of Section 3.2.
 
-### 3.6 Where the scheduler sits in the Siag et al. framework
+### 3.6 Where the scheduler sits in the Siag et al. (2023) framework
 
 Siag et al. (2023) define a framework in which "there are three decisions that
 define BiHS algorithms: (1) deciding when to terminate the search, (2) choosing
@@ -193,7 +193,7 @@ ACBS maps onto the three decisions as follows.
 - (3) Direction and budget: the scheduler of Sections 3.1 to 3.4.
 
 The scheduler differs from the published framework in three structural respects,
-and it is worth being precise about what is and is not new there.
+so it is worth being precise about which parts are new and which are not.
 
 - **Decision granularity.** The direction is decided once per chunk of roughly
   1,024 edge relaxations rather than once per node. With label setting, a chunk
@@ -201,7 +201,7 @@ and it is worth being precise about what is and is not new there.
   restricts rather than extends the reachable schedules. Its role is to give the
   efficiency estimate something measurable (a batch of work to score).
 - **Work-normalized measurement.** The efficiency score divides lower-bound gain
-  by relaxed + 4xexpanded + 2xqueueGrowth. Siag et al.'s policies aim to increase
+  by `relaxed + 4 x expanded + 2 x queueGrowth`. Siag et al.'s policies aim to increase
   a chosen bound without normalizing by the work consumed; their Section 4.2
   justifies node choice heuristically ("expanding nodes that will cause Bi to
   increase as early as possible would likely result in earlier termination").
@@ -545,11 +545,12 @@ The production tuning (the parts of the scheduler that most distinguish it on
 paper) has no consistent effect across the two seeds, and the observed spread
 between the adaptive variants (about 8 percent) is within query-sampling noise.
 
-The corollary for the release is recorded rather than acted on: dropping the
-dead band and the multipliers leaves performance comparable - neither variant
-dominates production, since both were slower on seed 7 - and a simpler scheduler
-might be worth it for its own sake. Changing the default search requires the
-release gates, so both stay in the code and the question is left open.
+The corollary for the release is documented rather than implemented. Dropping
+the dead band and the multipliers leaves performance comparable: neither variant
+dominates production, since both were slower on seed 7, and a simpler scheduler
+might be worth keeping for its own sake. Changing the default search requires
+passing the release gates, so both variants stay in the code and the question is
+left open.
 
 Final caveat: two seeds on one graph is thin evidence for "no effect". The
 honest statement is that no consistent effect was detected, not that none
