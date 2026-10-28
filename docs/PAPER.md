@@ -168,8 +168,12 @@ work does.
 ### 3.5 The static ablation
 
 `aegis-static` is identical except that it always uses `base` as the budget and
-skips rules 3.3.1 to 3.3.3, choosing directly by the tie-break order in 3.3.4.
-That is the comparison used in Section 1 and Section 6.6.
+skips rules 1 to 3 (warmup, alternation, and the dead-band comparison), choosing
+directly by the tie-break order in rule 4. The comparison against production
+ACBS is introduced in Section 1 and measured in Section 6.6 alongside the
+component ablations. Note the units: the chunk budget is counted in edge
+relaxations (the loop stops when `relaxedEdges >= budget`), not against the
+composite work measure of Section 3.2.
 
 ### 3.6 Where the scheduler sits in the Siag et al. framework
 
@@ -274,13 +278,14 @@ bounds gives the tightest condition available. ACBS consults only one. Section
 
 All comparisons use the same graph object, the same query set, the same warmup,
 and an interleaved measurement order, with no preprocessing for any algorithm.
-Steady-state allocation is zero bytes per query for every algorithm. Results are
-reported as the median over repeated measurements and as a paired comparison of
-the same queries, because the two disagree on some graphs. A median here is the
-nearest-rank 50th percentile over the query set: with an even number of queries,
-the lower of the two middle values. Every table in this note uses that
-convention, and one earlier draft mixed it with an interpolated median, which is
-recorded in Section 6.3.
+Steady-state allocation is zero bytes per query for every algorithm. The Tokyo
+distance run uses 400 queries; every other run in this note uses 300. Results
+are reported as the median over repeated measurements and as a paired
+comparison of the same queries, because the two disagree on some graphs. A
+median here is the nearest-rank 50th percentile over the query set: with an
+even number of queries, the lower of the two middle values. Every table in this
+note uses that convention, and one earlier draft mixed it with an interpolated
+median, which is recorded in Section 6.3.
 
 **Data.** OpenStreetMap extracts from Geofabrik, restricted to a box around the
 city centre and to ways that carry vehicle traffic, imported with the `car`
@@ -305,7 +310,7 @@ power, which is why travel time is reported separately.
 
 ### 6.1 Distance metric
 
-| Graph | Algorithm | Median | p95 | vs Dijkstra | Expanded | Correct |
+| Graph | Algorithm | Median | p95 | vs unidirectional Dijkstra | Expanded | Correct |
 |---|---|---:|---:|---:|---:|---:|
 | Tokyo | Dijkstra | 72.35 ms | 156.88 ms | 1.00x | 531,031 | 400/400 |
 | Tokyo | bidirectional Dijkstra | 50.60 ms | 125.64 ms | 1.43x | 368,789 | 400/400 |
@@ -321,7 +326,7 @@ queries and 288 of 300 Osaka queries.
 
 ### 6.2 Travel-time metric
 
-| Graph | Algorithm | Median | p95 | vs Dijkstra | Expanded | Correct |
+| Graph | Algorithm | Median | p95 | vs unidirectional Dijkstra | Expanded | Correct |
 |---|---|---:|---:|---:|---:|---:|
 | Tokyo | Dijkstra | 95.54 ms | 198.28 ms | 1.00x | 554,840 | 300/300 |
 | Tokyo | bidirectional Dijkstra | 50.23 ms | 127.40 ms | 1.90x | 319,568 | 300/300 |
@@ -395,7 +400,7 @@ queries.
 
 Local queries gain least because at that scale the fixed cost of setting up the
 search is a large share of the total, and there is little room for a better
-expansion order to show. Regional queries gain less than random ones even though
+expansion order to show up in the timings. Regional queries gain less than random ones even though
 they are longer: both frontiers sweep a wider area, and the asymmetry the
 scheduler exploits is less pronounced.
 
@@ -485,7 +490,7 @@ kept as a measurement vehicle, not as an implementation of the multi-bound idea.
 
 Measured on the Tokyo graph with the distance metric, 300 queries, all correct.
 
-| Algorithm | Median | vs Dijkstra | Expanded | Relaxed | Correct |
+| Algorithm | Median | vs unidirectional Dijkstra | Expanded | Relaxed | Correct |
 |---|---:|---:|---:|---:|---:|
 | Dijkstra | 81.06 ms | 1.00x | 531,266 | 1,091,302 | 300/300 |
 | bidirectional Dijkstra | 61.45 ms | 1.32x | 411,246 | 818,508 | 300/300 |
@@ -536,8 +541,8 @@ productive component. That gain is also visible in the work counters: on seed
 **The humbling one: the tuning components do not help.** Removing the dead band
 was 6.5 percent faster than production on seed 1010 and 3.1 percent slower on
 seed 7. Removing the EMA and removing the multipliers flip sign the same way.
-The production tuning - the parts of the scheduler that most distinguish it on
-paper - has no consistent effect across the two seeds, and the observed spread
+The production tuning (the parts of the scheduler that most distinguish it on
+paper) has no consistent effect across the two seeds, and the observed spread
 between the adaptive variants (about 8 percent) is within query-sampling noise.
 
 The corollary for the release is recorded rather than acted on: dropping the
@@ -579,7 +584,7 @@ exists.
 - The scheduler's tuning components (dead band, EMA smoothing, budget
   multipliers) showed no consistent effect across two seeds (Section 6.6). Two
   seeds cannot distinguish "no effect" from "effect too small to detect", and
-  the shipped default retains them pending gate-gated comparison.
+  the shipped default retains them pending a formally gated evaluation.
 
 ## 8. Reproducing
 
@@ -596,10 +601,11 @@ following, which the released code satisfies.
 | base budget 256 / 1024 / 2048 by edge count | `acbsBaseEdgeBudget` |
 | 2x and 4x budget multipliers, capped at 2x once an upper bound exists | `acbsEdgeBudget` |
 
-The static ablation `aegis-static` uses the same search with `adaptive` false,
-which forces the base budget and the tie-break-only direction rule. Comparing
-`aegis` against `aegis-static` therefore isolates the scheduler and nothing
-else.
+The CLI names carry over from the implementation: `aegis` is production ACBS,
+and `aegis-static` is the static ablation. The static variant uses the same
+search with `adaptive` false, which forces the base budget and the
+tie-break-only direction rule. Comparing `aegis` against `aegis-static`
+therefore isolates the scheduler and nothing else.
 
 The repository is <https://github.com/sahenjp/aegis-acbs>. Synthetic graphs come
 from `scripts/gen`. The OSM graphs are not distributed because of size; they are
