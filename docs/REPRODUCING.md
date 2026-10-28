@@ -82,3 +82,67 @@ for other in ("bidijkstra", "astar", "aegis"):
 
 The paired wins and losses quoted in the paper are computed the same way, from
 `stats.durationNs` on the shared `(sourceId, targetId)` keys.
+
+## London and New York (OpenStreetMap)
+
+The two non-Japanese cities in [BENCHMARK_CITIES.md](BENCHMARK_CITIES.md) use the
+same box method as Tokyo and Osaka, but take whole country extracts from Geofabrik
+and cut the city out locally. `scripts/extract-osm-bbox.py` does the cut with
+pyosmium; it is the two-pass version (ways first, then the nodes they reference)
+that [What is needed](#what-is-needed) already asks for.
+
+| City | Extract | Size | Centre | Radius |
+|---|---|---:|---|---:|
+| London | `https://download.geofabrik.de/europe/great-britain-latest.osm.pbf` | 2.19 GB | 51.5074, -0.1278 | 0.18 |
+| New York | `https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf` | 0.50 GB | 40.7128, -74.0060 | 0.18 |
+
+```bash
+mkdir -p /tmp/osm-pbf /tmp/osm-cities
+
+# Download (the GB extract took 486 s, NY took 131 s, on the machine in
+# BENCHMARK_CITIES.md; -C - resumes an interrupted transfer)
+curl -L -C - -o /tmp/osm-pbf/great-britain.osm.pbf \
+  https://download.geofabrik.de/europe/great-britain-latest.osm.pbf
+curl -L -C - -o /tmp/osm-pbf/new-york.osm.pbf \
+  https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf
+
+# Cut the bounding box out (692 s / 4.4 GB RSS for London, 169 s / 1.3 GB for NY)
+python3 scripts/extract-osm-bbox.py \
+  /tmp/osm-pbf/great-britain.osm.pbf /tmp/osm-cities/london.osm 51.5074 -0.1278 0.18
+python3 scripts/extract-osm-bbox.py \
+  /tmp/osm-pbf/new-york.osm.pbf /tmp/osm-cities/new-york.osm 40.7128 -74.0060 0.18
+
+# Import
+bin/aegis import-osm --input /tmp/osm-cities/london.osm \
+  --output /tmp/osm-cities/london-distance.aegis --profile car --metric distance --name london
+bin/aegis import-osm --input /tmp/osm-cities/new-york.osm \
+  --output /tmp/osm-cities/new-york-distance.aegis --profile car --metric distance --name new-york
+
+# Compare (362 s for London, 180 s for New York)
+bin/aegis benchmark --graph /tmp/osm-cities/london-distance.aegis \
+  --algorithms dijkstra,bidijkstra,astar,aegis,aegis-static \
+  --queries 300 --repeats 9 --order interleaved --suite mixed --seed 1010 \
+  --output /tmp/osm-cities/london-distance.json --html ''
+bin/aegis benchmark --graph /tmp/osm-cities/new-york-distance.aegis \
+  --algorithms dijkstra,bidijkstra,astar,aegis,aegis-static \
+  --queries 300 --repeats 9 --order interleaved --suite mixed --seed 1010 \
+  --output /tmp/osm-cities/new-york-distance.json --html ''
+```
+
+Check the import with `bin/aegis inspect --graph <file>`. London should report
+761,244 nodes and 1,449,256 directed edges with `heuristicStrength` 0.999919; New
+York 353,434 nodes and 590,876 edges with 0.999934. If those differ, the upstream
+extract has moved on.
+
+**Memory.** The extractor holds an OSM location cache for the whole country file:
+about 4.4 GB RSS for the 2.19 GB GB extract. Do not run two extractions, or an
+extraction and a large benchmark, at the same time. That combination exhausted the
+31 GB machine and all 7 GB of swap, and the kernel killed the Berlin extraction;
+see section 5 of [BENCHMARK_CITIES.md](BENCHMARK_CITIES.md).
+
+> [!NOTE]
+> Germany (4.87 GB) and France (5.11 GB) were downloaded but their box extraction
+> did not finish: Berlin was killed under memory pressure and Paris was stopped
+> after 22 minutes. No numbers exist for them. A city-sized regional extract, for
+> example a single Bundesland, avoids the whole-country node scan and is the
+> untested next step.

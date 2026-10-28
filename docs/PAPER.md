@@ -18,11 +18,17 @@ receives the next chunk of edge work, using the observed rise in the coupled
 lower bound per unit of work.
 
 We measured ACBS against Dijkstra, bidirectional Dijkstra, and A* on real
-OpenStreetMap networks for Tokyo (1,098,173 nodes) and Osaka (748,903 nodes),
-under both a distance metric and a travel-time metric. Every query returned an
-exact shortest path. Against bidirectional Dijkstra, the median speedup was 6.04x in Tokyo and 4.38x in Osaka on distance, and
-1.82x and 1.54x on travel time. Against plain unidirectional Dijkstra, the ratios were larger: 8.64x and
-6.59x on distance; the tables report both baselines so the two are not confused.
+OpenStreetMap networks in four cities - Tokyo (1,098,173 nodes), Osaka (748,903),
+London (761,244) and New York (353,434) - under a distance metric, and on Tokyo
+and Osaka under a travel-time metric as well. Every query returned an exact
+shortest path. Against bidirectional Dijkstra, the median speedup on distance was
+6.04x in Tokyo, 4.38x in Osaka, 4.29x in London and 3.19x in New York, and 1.82x
+and 1.54x on travel time in Tokyo and Osaka. Against plain unidirectional
+Dijkstra, the ratios were larger: 8.64x and 6.59x on distance in Tokyo and Osaka;
+the tables report both baselines so the two are not confused. On London and New
+York we also measured a variant that keeps the potential and the stopping rule
+but removes the scheduler, and it is 1.11x and 1.21x slower, which is the direct
+evidence that the scheduler and not something else is doing the work.
 The advantage shrinks as the geographic lower bound carries less information, and
 on a synthetic uniform lattice it disappears entirely. We report that reversal
 rather than omit it.
@@ -39,8 +45,8 @@ frontier minimum priority keys reaches the incumbent cost, with both quantities
 expressed in reduced units.
 Section 4 shows that this is a standard reduced-cost bidirectional rule and that
 it is *not* the g-bound, contrary to what an earlier draft of this note asserted.
-Siag et al. (2023) enumerate seventeen non-dominated global bounds and prove that
-the maximum over available bounds is the tightest single condition. ACBS does not
+Siag et al. (2023) [25] enumerate seventeen non-dominated global bounds and prove
+that the maximum over available bounds is the tightest single condition. ACBS does not
 evaluate any of them directly, because its heaps are ordered by reduced key. An
 earlier internal note described the rule as a contribution. It is not.
 
@@ -209,10 +215,10 @@ so it is worth being precise about which parts are new and which are not.
   budget through the 2x and 4x multipliers, with an EMA, a dead band, and forced
   alternation. Nothing of this kind appears in their framework.
 
-Side selection itself is prior art: Pohl's cardinality criterion and alternating
-policies are evaluated in their framework for BAE* (their Section 5), and ACBS's
-forced alternation and shorter-queue tie-break are coarse-grained variants of
-those two. Because the direction hook in their Algorithm 1 is open, any policy
+Side selection itself is prior art: Pohl's [4][5] cardinality criterion and
+alternating policies are evaluated in their framework for BAE* [20] (their
+Section 5), and ACBS's forced alternation and shorter-queue tie-break are
+coarse-grained variants of those two. Because the direction hook in their Algorithm 1 is open, any policy
 can be expressed inside it. **The claim this note can support is therefore
 scoped: ACBS contributes a concrete, fully specified scheduler design in the
 space their framework leaves open, evaluated on real road networks - not a new
@@ -296,7 +302,15 @@ profile. The edge cost is `ceil(meters * 1000)` for the distance metric and
 |---|---:|---:|---:|
 | Tokyo | 1,098,173 | 2,262,568 | 0.9999 / 0.2505 |
 | Osaka | 748,903 | 1,575,615 | 1.0000 / 0.2786 |
+| London | 761,244 | 1,449,256 | 0.9999 / - |
+| New York | 353,434 | 590,876 | 0.9999 / - |
 | Synthetic lattice | 1,000,000 | 2,596,627 | 0.9955 |
+
+London and New York were measured on the distance metric only. They were added
+after the first release, with the same pipeline, bounding-box half-width
+(0.18 degrees), seed and interleaving as Tokyo and Osaka, so the four cities are
+directly comparable. Their `aegis-static` rows are what allow the scheduler to
+be separated from the rest of the search on a network other than Tokyo.
 
 `heuristicStrength` is the ratio of the minimum to the mean cost per metre. In
 mathematics a bound is *saturated* when equality holds, which is the opposite of
@@ -320,9 +334,37 @@ power, which is why travel time is reported separately.
 | Osaka | bidirectional Dijkstra | 33.71 ms | 87.97 ms | 1.50x | 234,918 | 300/300 |
 | Osaka | A* | 13.70 ms | 87.83 ms | 3.70x | 57,780 | 300/300 |
 | Osaka | ACBS | **7.69 ms** | **48.52 ms** | **6.59x** | 34,137 | 300/300 |
+| London | Dijkstra | 53.23 ms | 95.99 ms | 1.00x | 416,127 | 300/300 |
+| London | bidirectional Dijkstra | 29.44 ms | 75.62 ms | 1.81x | 230,592 | 300/300 |
+| London | A* | 13.84 ms | 74.07 ms | 3.85x | 63,902 | 300/300 |
+| London | ACBS | **6.87 ms** | **30.17 ms** | **7.75x** | 38,221 | 300/300 |
+| London | aegis-static | 7.60 ms | 33.08 ms | 7.00x | 41,892 | 300/300 |
+| New York | Dijkstra | 17.41 ms | 36.51 ms | 1.00x | 170,376 | 300/300 |
+| New York | bidirectional Dijkstra | 12.56 ms | 31.70 ms | 1.39x | 130,293 | 300/300 |
+| New York | A* | 7.36 ms | 39.74 ms | 2.37x | 37,649 | 300/300 |
+| New York | ACBS | **3.94 ms** | **30.23 ms** | **4.43x** | 27,114 | 300/300 |
+| New York | aegis-static | 4.76 ms | 28.42 ms | 3.66x | 32,188 | 300/300 |
 
 Paired against bidirectional Dijkstra, ACBS finished ahead on 390 of 400 Tokyo
 queries and 288 of 300 Osaka queries.
+
+The last two graphs were added after the first release, to test whether the
+result depends on Japan. London and New York were built by the same pipeline
+from Geofabrik extracts with the same bounding-box half-width, and measured with
+the same harness, query count, seed and interleaving. The ordering is unchanged:
+ACBS is fastest on both, and on both it also beats the static ablation that
+keeps everything except the scheduler. The margins differ - 4.29x against
+bidirectional Dijkstra in London, 3.19x in New York, against 6.04x in Tokyo -
+so the effect is real across continents but not uniform across cities, which is
+the honest reading of four networks rather than two.
+
+New York and London additionally report `aegis-static`, which the earlier Tokyo
+and Osaka runs in this table do not. That row is the direct test of the
+scheduler: with the potential and the stopping rule held fixed, removing only
+the adaptive rule costs 1.11x in London and 1.21x in New York, and raises the
+median expanded count by 9 and 16 percent respectively. It is the same
+conclusion Section 6.6 reaches on Tokyo by component ablation, on different
+networks and a different continent.
 
 ### 6.2 Travel-time metric
 
@@ -380,8 +422,8 @@ This decomposition also explains why ACBS does poorly on a uniform lattice. On a
 lattice the expansion advantage largely evaporates, so the per-node penalty stays
 while the benefit it was paying for does not.
 
-The distinction is not new to the field. Wang et al. (2025), following Siag et al.
-(2023), recommend BAE* as the default for the consistent-heuristic case on the
+The distinction is not new to the field. Wang et al. (2025) [27], following Siag
+et al. (2023) [25], recommend BAE* [20] as the default for the consistent-heuristic case on the
 grounds that it strikes "a good balance between node expansions and runtime
 across different domains and heuristics". Treating the two as separate quantities
 is therefore the convention, and this section reports them separately for that
@@ -444,10 +486,10 @@ frontiers about equally, so there is little asymmetry for a scheduler to exploit
 Real road networks are irregular, and there the same scheduler keeps an
 advantage even when the bound is weak.
 
-This reversal is not unique to ACBS. Holte et al. (2017) note that as heuristic
+This reversal is not unique to ACBS. Holte et al. (2017) [11] note that as heuristic
 accuracy changes, the advantage shifts between algorithms, and Shperberg et al.
-(2020) formalise the related property of well-behavedness. Wang et al. (2025)
-report the same direction in their own experiments, with their MEET algorithm
+(2020) [19] formalise the related property of well-behavedness. Wang et al. (2025)
+[27] report the same direction in their own experiments, with their MEET algorithm
 roughly on par with A* on one grid map and about twice as slow on another where
 the heuristics are less informative.
 
@@ -458,7 +500,7 @@ its stopping condition can be tightened. This section reports an attempt to do
 that, and why it did not produce the answer we wanted.
 
 The intent was to terminate on the maximum of several admissible global bounds,
-following Siag et al. (2023), who show that the maximum over the bounds an
+following Siag et al. (2023) [25], who show that the maximum over the bounds an
 algorithm can keep is the tightest condition available. Two variants were built.
 
 - `multibound`, a plain bidirectional A* with no scheduler, so that only the
@@ -558,7 +600,9 @@ exists.
 
 ## 7. Limitations
 
-- Two cities, one machine. No claim is made about other cities or hardware.
+- Two cities, one machine in the original evaluation. Section 7.1 records how
+  far the result extends to other cities, and where the scheduler stops acting
+  at all.
 - The stopping rule is known; the scheduler is the only candidate contribution
   and its distinctness from prior expansion policies is unresolved.
 - Turn restrictions are not modelled. The Tokyo box contains 2,089 OSM
@@ -586,6 +630,29 @@ exists.
   multipliers) showed no consistent effect across two seeds (Section 6.6). Two
   seeds cannot distinguish "no effect" from "effect too small to detect", and
   the shipped default retains them pending a formally gated evaluation.
+
+### 7.1 Where the scheduler does nothing
+
+The scheduler is not always active. On some graphs the search finishes in a
+single chunk, in which case the scheduler makes exactly one decision and its
+policies never come into play. On the Hatfield road network as reconstructed
+here, the median number of chunks per query is one and the direction never
+switches, so that graph cannot support any claim about scheduling.
+
+The same ceiling appears on the synthetic lattice. On a 10,000-node uniform
+lattice the median expanded count is identical (1,392) for production ACBS and
+for the static ablation, so the 3 percent aggregate difference over 200 queries
+is not evidence that the adaptive rule helps there. The lattice is reported in
+Section 6.4 for the opposite purpose, showing where the *geographic bound* stops
+carrying information; it is not a test of the scheduler.
+
+The scheduler's gain is therefore established on irregular road networks with a
+strong geographic bound (Sections 6.1, 6.6), and the honest reading is that the
+mechanism depends on the two frontiers having measurably different productivity.
+A theoretical treatment of when that holds is in [THEORY.md](THEORY.md); the
+main result there is negative, in that the natural objective - maximise the rate
+of rise of the coupled lower bound - fails to define an optimal expansion order
+once an upper bound exists.
 
 ## 8. Reproducing
 
@@ -617,20 +684,206 @@ including the defects found during development and how each was resolved, are in
 
 ## References
 
-- Chen, Holte, Zilles, Sturtevant. Front-to-End Bidirectional Heuristic Search
-  with Near-Optimal Node Expansions. IJCAI 2017. arXiv:1703.03868.
-- Holte, Felner, Sharon, Sturtevant, Chen. MM: A bidirectional search algorithm
-  that is guaranteed to meet in the middle. Artificial Intelligence 252, 2017.
-- Kaindl, Kainz. Bidirectional Heuristic Search Reconsidered. JAIR 7, 1997.
-- Shperberg, Felner, Sturtevant, Shimony, Hayoun. Bidirectional Heuristic
-  Search: Expanding Nodes by a Lower Bound. IJCAI 2020.
-- Siag, Shperberg, Felner, Sturtevant. Front-to-End Bidirectional Heuristic
-  Search with Consistent Heuristics: Enumerating and Evaluating Algorithms and
-  Bounds. IJCAI 2023.
-- Wang, Weiss, Mu, Salzman. Bidirectional Search while Ensuring
-  Meet-In-The-Middle via Effective and Efficient-to-Compute Termination
-  Conditions. IJCAI 2025.
-- Alcázar, Riddle, Barley. A Unifying View on Individual Bounds and Heuristic
-  Inaccuracies in Bidirectional Search. AAAI 2020.
-- Goldberg, Harrelson. Computing the Shortest Path: A* Search Meets Graph
-  Theory. SODA 2005. (Balanced bidirectional A* termination.)
+Entries are numbered for citation. The body cites by author name and year; the
+number in brackets is the entry here. Every DOI and arXiv identifier in this
+list was checked against Crossref or the arXiv API while it was added.
+
+### Foundational shortest-path search
+
+[1] Dijkstra, E. W. A Note on Two Problems in Connexion with Graphs.
+*Numerische Mathematik* 1, 269-271, 1959. DOI: `10.1007/BF01386390`.
+
+[2] Hart, P. E., Nilsson, N. J., Raphael, B. A Formal Basis for the Heuristic
+Determination of Minimum Cost Paths. *IEEE Transactions on Systems Science and
+Cybernetics* 4(2), 100-107, 1968. DOI: `10.1109/TSSC.1968.300136`.
+
+[3] Nicholson, T. A. J. Finding the Shortest Route between Two Points in a
+Network. *The Computer Journal* 9(3), 275-280, 1966.
+DOI: `10.1093/comjnl/9.3.275`.
+
+[4] Pohl, I. Bi-directional Search. In B. Meltzer and D. Michie (eds.),
+*Machine Intelligence* 6, 127-140. Edinburgh University Press, 1971.
+
+[5] Pohl, I. Bi-Directional and Heuristic Search in Path Problems. PhD
+dissertation, Stanford University, 1969. SLAC report; DOI:
+`10.2172/4785039`. Introduces the cardinality-comparison criterion that
+Section 3.6 refers to as a side-selection policy.
+
+### Bidirectional heuristic search: early formulations
+
+[6] Sint, L., de Champeaux, D. An Improved Bidirectional Heuristic Search
+Algorithm. *Journal of the ACM* 24(2), 177-191, 1977.
+DOI: `10.1145/322003.322004`.
+
+[7] de Champeaux, D. Bidirectional Heuristic Search Again. *Journal of the
+ACM* 30(1), 22-32, 1983. DOI: `10.1145/322358.322360`.
+
+[8] Kwa, J. B. H. BS*: An Admissible Bidirectional Staged Heuristic Search
+Algorithm. *Artificial Intelligence* 38(1), 95-109, 1989.
+DOI: `10.1016/0004-3702(89)90069-6`.
+
+[9] Kaindl, H., Kainz, G. Bidirectional Heuristic Search Reconsidered.
+*Journal of Artificial Intelligence Research* 7, 283-317, 1997.
+DOI: `10.1613/jair.460`. arXiv: `cs/9712102`.
+
+### Bounds, expansions and termination conditions
+
+[10] Holte, R. C., Felner, A., Sharon, G., Sturtevant, N. R. Bidirectional
+Search That Is Guaranteed to Meet in the Middle. In *Proceedings of the 30th
+AAAI Conference on Artificial Intelligence*, 3411-3417, 2016.
+DOI: `10.1609/aaai.v30i1.10436`.
+
+[11] Holte, R. C., Felner, A., Sharon, G., Sturtevant, N. R., Chen, J. MM: A
+Bidirectional Search Algorithm That Is Guaranteed to Meet in the Middle.
+*Artificial Intelligence* 252, 232-266, 2017.
+DOI: `10.1016/j.artint.2017.05.004`.
+
+[12] Chen, J., Holte, R. C., Zilles, S., Sturtevant, N. R. Front-to-End
+Bidirectional Heuristic Search with Near-Optimal Node Expansions. In
+*Proceedings of the 26th International Joint Conference on Artificial
+Intelligence (IJCAI)*, 489-495, 2017. DOI: `10.24963/ijcai.2017/69`.
+arXiv: `1703.03868`.
+
+[13] Eckerle, J., Chen, J., Sturtevant, N. R., Zilles, S., Holte, R. C.
+Sufficient Conditions for Node Expansion in Bidirectional Heuristic Search.
+In *Proceedings of the 27th International Conference on Automated Planning and
+Scheduling (ICAPS)*, 79-87, 2017. DOI: `10.1609/icaps.v27i1.13825`.
+
+[14] Shaham, E., Felner, A., Chen, J., Sturtevant, N. R. The Minimal Set of
+States That Must Be Expanded in a Front-to-End Bidirectional Search. In
+*Proceedings of the 10th International Symposium on Combinatorial Search
+(SOCS)*, 82-90, 2017. DOI: `10.1609/socs.v8i1.18426`.
+
+[15] Barker, J. K., Korf, R. E. Limitations of Front-To-End Bidirectional
+Heuristic Search. In *Proceedings of the 29th AAAI Conference on Artificial
+Intelligence*, 1086-1092, 2015. DOI: `10.1609/aaai.v29i1.9374`.
+
+[16] Shperberg, S. S., Felner, A., Shimony, S. E., Sturtevant, N. R., Hayoun,
+A. Improving Bidirectional Heuristic Search by Bounds Propagation. In
+*Proceedings of the 12th International Symposium on Combinatorial Search
+(SOCS)*, 106-114, 2019. DOI: `10.1609/socs.v10i1.18508`.
+
+[17] Shperberg, S. S., Felner, A., Sturtevant, N. R., Shimony, S. E., Hayoun,
+A. Enriching Non-Parametric Bidirectional Search Algorithms. In *Proceedings of
+the 33rd AAAI Conference on Artificial Intelligence*, 2379-2386, 2019.
+DOI: `10.1609/aaai.v33i01.33012379`.
+
+[18] Shaham, E., Felner, A., Sturtevant, N. R., Rosenschein, J. S. Optimally
+Efficient Bidirectional Search. In *Proceedings of the 28th International
+Joint Conference on Artificial Intelligence (IJCAI)*, 6221-6225, 2019.
+DOI: `10.24963/ijcai.2019/867`.
+
+[19] Shperberg, S. S., Felner, A., Sturtevant, N. R., Shimony, S. E., Hayoun,
+A. Bidirectional Heuristic Search: Expanding Nodes by a Lower Bound. In
+*Proceedings of the 29th International Joint Conference on Artificial
+Intelligence (IJCAI)*, 4775-4779, 2020. DOI: `10.24963/ijcai.2020/664`.
+
+[20] Alcázar, V., Riddle, P. J., Barley, M. A Unifying View on Individual
+Bounds and Heuristic Inaccuracies in Bidirectional Search. In *Proceedings of
+the 34th AAAI Conference on Artificial Intelligence*, 2327-2334, 2020.
+DOI: `10.1609/aaai.v34i03.5611`.
+
+[21] Sewell, E. C., Jacobson, S. H. Dynamically Improved Bounds Bidirectional
+Search. *Artificial Intelligence* 291, 103405, 2021.
+DOI: `10.1016/j.artint.2020.103405`.
+
+[22] Pavlik, J. A., Sewell, E. C., Jacobson, S. H. Iterative Deepening
+Dynamically Improved Bounds Bidirectional Search. *INFORMS Journal on
+Computing* 34(2), 974-989, 2022. DOI: `10.1287/ijoc.2021.1116`.
+
+[23] Rice, M., Tsotras, V. J. Bidirectional A* Search with Additive
+Approximation Bounds. In *Proceedings of the 3rd International Symposium on
+Combinatorial Search (SOCS)*, 80-87, 2021.
+DOI: `10.1609/socs.v3i1.18235`.
+
+[24] Hu, K., Speck, D. On Bidirectional Heuristic Search in Classical
+Planning: An Analysis of BAE*. In *Proceedings of the 15th International
+Symposium on Combinatorial Search (SOCS)*, 91-99, 2022.
+DOI: `10.1609/socs.v15i1.21756`.
+
+[25] Siag, L., Shperberg, S. S., Felner, A., Sturtevant, N. R. Front-to-End
+Bidirectional Heuristic Search with Consistent Heuristics: Enumerating and
+Evaluating Algorithms and Bounds. In *Proceedings of the 32nd International
+Joint Conference on Artificial Intelligence (IJCAI)*, 5631-5638, 2023.
+DOI: `10.24963/ijcai.2023/625`.
+
+[26] Siag, L., Shperberg, S. S., Felner, A., Sturtevant, N. R. Comparing
+Front-to-Front and Front-to-End Heuristics in Bidirectional Search. In
+*Proceedings of the 16th International Symposium on Combinatorial Search
+(SOCS)*, 158-162, 2023. DOI: `10.1609/socs.v16i1.27296`.
+
+[27] Wang, Y., Weiss, E., Mu, B., Salzman, O. Bidirectional Search while
+Ensuring Meet-In-The-Middle via Effective and Efficient-to-Compute Termination
+Conditions. In *Proceedings of the 34th International Joint Conference on
+Artificial Intelligence (IJCAI)*, 8987-8995, 2025.
+DOI: `10.24963/ijcai.2025/999`.
+
+[28] Siag, L., Shperberg, S. S. Bridging Theory and Practice in Bidirectional
+Heuristic Search with Front-to-End Consistent Heuristics. *Artificial
+Intelligence* 348, 104420, 2025. DOI: `10.1016/j.artint.2025.104420`.
+
+[29] Shperberg, S. S., Morad, N., Siag, L., Felner, A., Atzmon, D.
+Bidirectional Bounded-Suboptimal Heuristic Search with Consistent Heuristics.
+Extended abstract in *Proceedings of the 18th International Symposium on
+Combinatorial Search (SOCS)*, 265-266, 2025.
+DOI: `10.1609/socs.v18i1.36011`. Full preprint: arXiv: `2511.10272`.
+
+### Surveys and follow-on results
+
+[30] Sturtevant, N. R., Felner, A. A Brief History and Recent Achievements in
+Bidirectional Search. In *Proceedings of the 32nd AAAI Conference on
+Artificial Intelligence*, 8000-8006, 2018.
+DOI: `10.1609/aaai.v32i1.12218`.
+
+[31] Sturtevant, N. R., Shperberg, S. S., Felner, A., Chen, J. Predicting the
+Effectiveness of Bidirectional Heuristic Search. In *Proceedings of the 30th
+International Conference on Automated Planning and Scheduling (ICAPS)*,
+281-290, 2020. DOI: `10.1609/icaps.v30i1.6672`.
+
+[32] Siag, L., Shperberg, S. S., Felner, A., Sturtevant, N. R. On Parallel
+External-Memory Bidirectional Search. In *Proceedings of the 17th
+International Symposium on Combinatorial Search (SOCS)*, 2024.
+DOI: `10.3233/FAIA240991`. arXiv: `2412.21104`.
+
+[33] Wang, Y., Mu, B., Shokouhi, S., Thein, M.-W. Optimal Kinodynamic Motion
+Planning Through Anytime Bidirectional Heuristic Search with Tight Termination
+Condition. arXiv: `2604.11587`, 2026. Applies the tight termination
+condition of [27] to sampling-based motion planning.
+
+[34] Shubi, T., Felner, A., Shimony, S. E., Shperberg, S. S. Bidirectional
+Search for Longest Paths: Case for Front-to-Front Heuristics.
+arXiv: `2606.05956`, 2026.
+
+### Road-network routing and speedup techniques
+
+[35] Goldberg, A. V., Harrelson, C. Computing the Shortest Path: A* Search
+Meets Graph Theory. In *Proceedings of the 16th Annual ACM-SIAM Symposium on
+Discrete Algorithms (SODA)*, 156-165, 2005.
+
+[36] Geisberger, R., Sanders, P., Schultes, D., Delling, D. Contraction
+Hierarchies: Faster and Simpler Hierarchical Routing in Road Networks. In
+*Experimental Algorithms (WEA 2008)*, LNCS 5038, 319-333, 2008.
+DOI: `10.1007/978-3-540-68552-4_24`.
+
+[37] Geisberger, R., Sanders, P., Schultes, D., Vetter, C. Exact Routing in
+Large Road Networks Using Contraction Hierarchies. *Transportation Science*
+46(3), 388-404, 2012. DOI: `10.1287/trsc.1110.0401`.
+
+[38] Bast, H., Delling, D., Goldberg, A., Müller-Hannemann, M., Pajor, T.,
+Sanders, P., Wagner, D., Werneck, R. F. Route Planning in Transportation
+Networks. In *Algorithm Engineering*, LNCS 9220, 19-80, 2016.
+DOI: `10.1007/978-3-319-49487-6_2`.
+
+[39] Abraham, I., Fiat, A., Goldberg, A. V., Werneck, R. F. Highway
+Dimension, Shortest Paths, and Provably Efficient Algorithms. In *Proceedings
+of the 21st Annual ACM-SIAM Symposium on Discrete Algorithms (SODA)*,
+782-793, 2010. DOI: `10.1137/1.9781611973075.64`.
+
+[40] Felner, A., Moldenhauer, C., Sturtevant, N. R., Schaeffer, J.
+Single-Frontier Bidirectional Search. In *Proceedings of the 24th AAAI
+Conference on Artificial Intelligence*, 59-64, 2010.
+DOI: `10.1609/aaai.v24i1.7555`.
+
+[41] Al-Ayyoub, A. Distributed Unidirectional and Bidirectional Heuristic
+Search: Algorithm Design and Empirical Assessment. *The Journal of
+Supercomputing* 32, 231-250, 2005. DOI: `10.1007/s11227-005-0165-7`.
