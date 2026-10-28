@@ -52,11 +52,14 @@ allocates the next chunk accordingly. The ablation that removes only the
 scheduler, keeping the potential and the stopping rule identical, is available
 as `aegis-static`.
 
-Whether that scheduler is genuinely distinct from prior expansion policies is
-**not yet established**. Siag et al. describe expansion policies aimed at
-raising a chosen bound quickly; a scheduler that raises the coupled bound
-quickly is plausibly an instance of that idea rather than a departure from it.
-`docs/NOVELTY_CHECKLIST.md` records this as an open item.
+Where that scheduler sits relative to prior work is now bounded rather than
+open. Section 3.6 maps ACBS onto the three-decision framework of Siag et al.
+(2023): the scheduler is an instance of their open direction hook, at coarser
+granularity and with a work-normalized score, and its side-selection components
+are coarse-grained variants of Pohl's cardinality and alternating policies.
+Section 6.6 ablates the scheduler's components on real data: the productive part
+is the efficiency-based direction choice, while the tuning knobs (dead band,
+EMA, budget multipliers) show no consistent effect across seeds.
 
 ## 2. The search
 
@@ -166,6 +169,50 @@ work does.
 `aegis-static` is identical except that it always uses `base` as the budget and
 skips rules 3.3.1 to 3.3.3, choosing directly by the tie-break order in 3.3.4.
 That is the comparison used in Section 1 and Section 6.5.
+
+### 3.6 Where the scheduler sits in the Siag et al. framework
+
+Siag et al. (2023) define a framework in which "there are three decisions that
+define BiHS algorithms: (1) deciding when to terminate the search, (2) choosing
+which node to expand from a given direction, and (3) choosing the direction from
+which the next node will be expanded", with Algorithm 1 structured as
+`D <- ChooseDirection(p)`, `n <- ChooseNode(D)`, `Expand(n, D)`,
+`LB <- ComputeLowerBound(p)`. Their direction hook is decided **per node
+expansion**.
+
+ACBS maps onto the three decisions as follows.
+
+- (1) Termination: the reduced-key test of Section 4. Standard, not from their
+  bound enumeration.
+- (2) Node choice: minimum key within the direction. Standard label setting.
+- (3) Direction and budget: the scheduler of Sections 3.1 to 3.4.
+
+The scheduler differs from the published framework in three structural respects,
+and it is worth being precise about what is and is not new there.
+
+- **Decision granularity.** The direction is decided once per chunk of roughly
+  1,024 edge relaxations rather than once per node. With label setting, a chunk
+  is equivalent to a run of identical per-node direction choices, so chunking
+  restricts rather than extends the reachable schedules. Its role is to give the
+  efficiency estimate something measurable (a batch of work to score).
+- **Work-normalized measurement.** The efficiency score divides lower-bound gain
+  by relaxed + 4xexpanded + 2xqueueGrowth. Siag et al.'s policies aim to increase
+  a chosen bound without normalizing by the work consumed; their Section 4.2
+  justifies node choice heuristically ("expanding nodes that will cause Bi to
+  increase as early as possible would likely result in earlier termination").
+- **Closed-loop allocation.** The measured score feeds back into the next chunk's
+  budget through the 2x and 4x multipliers, with an EMA, a dead band, and forced
+  alternation. Nothing of this kind appears in their framework.
+
+Side selection itself is prior art: Pohl's cardinality criterion and alternating
+policies are evaluated in their framework for BAE* (their Section 5), and ACBS's
+forced alternation and shorter-queue tie-break are coarse-grained variants of
+those two. Because the direction hook in their Algorithm 1 is open, any policy
+can be expressed inside it. **The claim this note can support is therefore
+scoped: ACBS contributes a concrete, fully specified scheduler design in the
+space their framework leaves open, evaluated on real road networks - not a new
+algorithm class.** Whether the design choices are good is measured by the
+component ablation in Section 6.6, and the answer is humbling.
 
 ## 4. What the termination rule is, and what it is not
 
@@ -444,6 +491,53 @@ reduced-key ordering here.
 condition, combined with the ACBS scheduler, would beat the current rule has not
 been measured.
 
+### 6.6 Which scheduler component matters
+
+Section 3 lists four scheduler components beyond the tie-break order: the 10
+percent dead band, the forced alternation, the EMA smoothing, and the budget
+multipliers. Section 6.5 showed that a wrong stopping condition can masquerade as
+a speedup; the scheduler ablations are the complementary check, because the
+scheduler never touches correctness and any measured difference is a real
+scheduling effect.
+
+Four variants were built, each removing exactly one component while keeping the
+search, the potential, and the stopping rule identical. Both runs are on the
+Tokyo distance graph, 300 queries, 5 repeats, interleaved, all correct 300/300.
+
+| Algorithm | seed 1010 median | seed 7 median |
+|---|---:|---:|
+| ACBS (production) | 13.23 ms | 13.87 ms |
+| aegis-static (no adaptive scheduling) | 14.85 ms | 17.07 ms |
+| aegis-nodeadband | 12.37 ms | 14.31 ms |
+| aegis-noalternation | 13.22 ms | 14.52 ms |
+| aegis-instant | 12.32 ms | 13.95 ms |
+| aegis-nomultiplier | 12.65 ms | 14.30 ms |
+
+Two findings, of opposite sign and different stability.
+
+**The stable one: adaptive direction scheduling helps.** Production ACBS is
+faster than the static ablation on both seeds, by 10.9 and 18.7 percent. The
+static ablation keeps everything but the scheduler, so closing the loop -
+measuring each direction's efficiency and steering work accordingly - is the
+productive component. That gain is also visible in the work counters: on seed
+1010 the static ablation expands 54,777 nodes against ACBS's 44,726.
+
+**The humbling one: the tuning components do not help.** Removing the dead band
+was 6.5 percent faster than production on seed 1010 and 3.1 percent slower on
+seed 7. Removing the EMA and removing the multipliers flip sign the same way.
+The production tuning - the parts of the scheduler that most distinguish it on
+paper - has no consistent effect across the two seeds, and the observed spread
+between the adaptive variants (about 8 percent) is within query-sampling noise.
+
+The corollary for the release is recorded rather than acted on: a lighter
+scheduler without the dead band and the multipliers might dominate the shipped
+one, but changing the default search requires the release gates, so both stay in
+the code and the question is left open.
+
+Final caveat: two seeds on one graph is thin evidence for "no effect". The
+honest statement is that no consistent effect was detected, not that none
+exists.
+
 ## 7. Limitations
 
 - Two cities, one machine. No claim is made about other cities or hardware.
@@ -458,9 +552,10 @@ been measured.
 - Only one stopping condition is consulted. Section 6.5 records that both
   attempts to widen it were unsound and were reverted or reduced, so whether a
   sound multi-bound condition would help is unknown.
-- The scheduler is specified in Section 3, but it has not been compared against
-  another scheduling policy beyond the static ablation. Whether a different
-  score, dead band or budget schedule would do better is untested.
+- The scheduler is specified in Section 3 and ablated component-by-component
+  in Section 6.6, but only against itself. The side-selection policies evaluated
+  by Siag et al. (cardinality, alternating) and other scheduling policies remain
+  untested at this granularity.
 - Travel-time results use a speed model derived from `maxspeed` tagging, not
   observed traffic.
 - Timings are medians over repeated interleaved runs on one machine. The
@@ -469,6 +564,10 @@ been measured.
 - The query classes are defined by the harness, and the class boundaries are not
   varied here. The weakness on local queries (93 percent win rate) is not
   investigated further.
+- The scheduler's tuning components (dead band, EMA smoothing, budget
+  multipliers) showed no consistent effect across two seeds (Section 6.6). Two
+  seeds cannot distinguish "no effect" from "effect too small to detect", and
+  the shipped default retains them pending gate-gated comparison.
 
 ## 8. Reproducing
 

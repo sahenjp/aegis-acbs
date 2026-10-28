@@ -30,6 +30,13 @@ const (
 	// PB is the Pareto-Buckets exact bidirectional Dijkstra (balanced radix
 	// bucket selection over both frontiers). Exposed for benchmark evaluation.
 	PB Algorithm = "pb-buckets"
+	// Scheduler ablations: each removes exactly one component of the adaptive
+	// scheduler (Section 3 of docs/PAPER.md) while keeping the search, the
+	// potential, and the stopping rule identical. All remain exact.
+	AegisNoDeadBand    Algorithm = "aegis-nodeadband"
+	AegisNoAlternation Algorithm = "aegis-noalternation"
+	AegisInstantScore  Algorithm = "aegis-instant"
+	AegisFixedBudget   Algorithm = "aegis-nomultiplier"
 )
 
 const policyVersion = "road-v3-time-aware"
@@ -168,6 +175,14 @@ func Run(ctx context.Context, g *graph.Graph, source, target int, alg Algorithm)
 		r, err = multiBound(ctx, g, source, target)
 	case MultiboundStatic:
 		r, err = multiboundStatic(ctx, g, source, target)
+	case AegisNoDeadBand:
+		r, err = aegisNoDeadBand(ctx, g, source, target)
+	case AegisNoAlternation:
+		r, err = aegisNoAlternation(ctx, g, source, target)
+	case AegisInstantScore:
+		r, err = aegisInstantScore(ctx, g, source, target)
+	case AegisFixedBudget:
+		r, err = aegisFixedBudget(ctx, g, source, target)
 	default:
 		return Result{}, fmt.Errorf("unknown algorithm %q", alg)
 	}

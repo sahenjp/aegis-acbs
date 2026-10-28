@@ -31,11 +31,15 @@ const (
 )
 
 type acbsOptions struct {
-	algorithm  Algorithm
-	adaptive   bool
-	pruning    bool
-	projection bool
-	guardMode  acbsGuardMode
+	algorithm     Algorithm
+	adaptive      bool
+	pruning       bool
+	projection    bool
+	guardMode     acbsGuardMode
+	noDeadBand    bool
+	noAlternation bool
+	instantScore  bool
+	fixedBudget   bool
 }
 
 func acbs(ctx context.Context, g *graph.Graph, source, target int) (Result, error) {
@@ -44,6 +48,34 @@ func acbs(ctx context.Context, g *graph.Graph, source, target int) (Result, erro
 	// path therefore keeps the exact coupled-bound termination rule but does
 	// not run the optional per-node incumbent pruning experiment.
 	return acbsWithOptions(ctx, g, source, target, acbsOptions{algorithm: Aegis, adaptive: true, pruning: false})
+}
+
+// Scheduler-component ablations. Each keeps the search, the potential, and the
+// stopping rule identical to production ACBS and removes exactly one scheduler
+// component, so a benchmark comparison isolates that component. All remain
+// exact: the scheduler never touches labels, distances, or the stopping test.
+func aegisNoDeadBand(ctx context.Context, g *graph.Graph, source, target int) (Result, error) {
+	return acbsWithOptions(ctx, g, source, target, acbsOptions{
+		algorithm: AegisNoDeadBand, adaptive: true, pruning: false, noDeadBand: true,
+	})
+}
+
+func aegisNoAlternation(ctx context.Context, g *graph.Graph, source, target int) (Result, error) {
+	return acbsWithOptions(ctx, g, source, target, acbsOptions{
+		algorithm: AegisNoAlternation, adaptive: true, pruning: false, noAlternation: true,
+	})
+}
+
+func aegisInstantScore(ctx context.Context, g *graph.Graph, source, target int) (Result, error) {
+	return acbsWithOptions(ctx, g, source, target, acbsOptions{
+		algorithm: AegisInstantScore, adaptive: true, pruning: false, instantScore: true,
+	})
+}
+
+func aegisFixedBudget(ctx context.Context, g *graph.Graph, source, target int) (Result, error) {
+	return acbsWithOptions(ctx, g, source, target, acbsOptions{
+		algorithm: AegisFixedBudget, adaptive: true, pruning: false, fixedBudget: true,
+	})
 }
 
 func acbsLateGuard(ctx context.Context, g *graph.Graph, source, target int) (Result, error) {
@@ -194,6 +226,7 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 			direction = chooseACBSDirection(
 				g, frontF, frontB, qf.Len(), qb.Len(), scoreF, scoreB,
 				sampledF, sampledB, lastDirection, consecutive,
+				opts.noDeadBand, opts.noAlternation,
 			)
 		} else {
 			direction = chooseACBSStaticDirection(g, frontF, frontB, qf.Len(), qb.Len())
@@ -209,7 +242,9 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 		}
 
 		budget := acbsEdgeBudget(g.EdgeCount, scoreF, scoreB, direction, bestReduced != inf)
-		if !opts.adaptive || connectionGuardActive {
+		if !opts.adaptive || connectionGuardActive || opts.fixedBudget {
+			// Ablation (fixedBudget) or the static/guard paths: the multipliers
+			// are removed and every chunk gets the base budget.
 			budget = acbsBaseEdgeBudget(g.EdgeCount)
 		}
 		if connectionGuardActive {
@@ -385,11 +420,22 @@ func acbsWithOptions(ctx context.Context, g *graph.Graph, source, target int, op
 		)
 		if opts.adaptive {
 			instant := efficiencyScore(gain, work)
-			if direction == 'F' {
+			if opts.instantScore {
+				// Ablation: the EMA is removed, so the score is the last chunk's
+				// instantaneous efficiency and reacts to every fluctuation.
+				if direction == 'F' {
+					scoreF = instant
+				} else {
+					scoreB = instant
+				}
+			} else if direction == 'F' {
 				scoreF = emaScore(scoreF, instant, sampledF)
-				sampledF = true
 			} else {
 				scoreB = emaScore(scoreB, instant, sampledB)
+			}
+			if direction == 'F' {
+				sampledF = true
+			} else {
 				sampledB = true
 			}
 		}
@@ -715,7 +761,7 @@ func chooseACBSStaticDirection(g *graph.Graph, frontF, frontB item, lenF, lenB i
 	return 'B'
 }
 
-func chooseACBSDirection(g *graph.Graph, frontF, frontB item, lenF, lenB int, scoreF, scoreB uint64, sampledF, sampledB bool, last byte, consecutive int) byte {
+func chooseACBSDirection(g *graph.Graph, frontF, frontB item, lenF, lenB int, scoreF, scoreB uint64, sampledF, sampledB bool, last byte, consecutive int, noDeadBand, noAlternation bool) byte {
 	if !sampledF {
 		return 'F'
 	}
@@ -724,17 +770,28 @@ func chooseACBSDirection(g *graph.Graph, frontF, frontB item, lenF, lenB int, sc
 	}
 	// Periodically refresh both empirical efficiency estimates. This affects
 	// scheduling only; it is not required for exactness.
-	if consecutive >= 6 {
+	if !noAlternation && consecutive >= 6 {
 		if last == 'F' {
 			return 'B'
 		}
 		return 'F'
 	}
-	if scoreF > scoreB+scoreB/10 {
-		return 'F'
-	}
-	if scoreB > scoreF+scoreF/10 {
-		return 'B'
+	if noDeadBand {
+		// Ablation: the 10 percent dead band is removed, so any positive score
+		// difference flips the direction.
+		if scoreF > scoreB {
+			return 'F'
+		}
+		if scoreB > scoreF {
+			return 'B'
+		}
+	} else {
+		if scoreF > scoreB+scoreB/10 {
+			return 'F'
+		}
+		if scoreB > scoreF+scoreF/10 {
+			return 'B'
+		}
 	}
 	if frontF.priority < frontB.priority {
 		return 'F'
