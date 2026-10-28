@@ -290,28 +290,28 @@ result, so they are separated here.
 The measurements below are on the Tokyo distance graph, against bidirectional
 Dijkstra, over the same 300 queries.
 
-| Algorithm | Median time | Median expanded | ns per expanded node |
+| Algorithm | Median time | Median expanded | Time per expanded node |
 |---|---:|---:|---:|
-| bidirectional Dijkstra | 61.60 ms | 414,234 | 141.3 |
-| ACBS | 9.77 ms | 46,083 | 208.3 |
+| bidirectional Dijkstra | 61.45 ms | 411,246 | 149.4 ns |
+| ACBS | 9.76 ms | 44,726 | 218.2 ns |
 
-The total speedup is 6.31x, and it factors into two terms.
+The total speedup is 6.30x, and it factors into two terms.
 
 ```
-6.31x = 8.99x (fewer expansions) * 0.70x (higher per-node cost)
+6.30x = 9.19x (fewer expansions) * 0.68x (higher per-node cost)
 ```
 
-**ACBS buys its speed by expanding far fewer nodes, and it pays for that with 43
-percent more work per node.** Bidirectional Dijkstra expands nine times as many
-nodes, but each one is cheaper to process.
+**ACBS buys its speed by expanding nine times fewer nodes, and it pays for that
+with 46 percent more work per node.** Bidirectional Dijkstra expands nine times
+as many nodes, but each one is cheaper to process.
 
-Per-node cost is duration divided by expanded nodes, so it mixes the cost of a
-pop, the cost of the edges scanned out of that node, and the fixed setup of a
-query. ACBS does more per node than a plain Dijkstra loop: it evaluates the
-potential at each relaxed neighbour, maintains an efficiency score per
-direction, and decides direction and budget at chunk boundaries. None of that
-appears in a bidirectional Dijkstra inner loop. The numbers say that overhead is
-real and measurable, and that it is still worth paying.
+Per-node cost is the median duration divided by the median expanded count, so it
+mixes the cost of a pop, the cost of the edges scanned out of that node, and the
+fixed setup of a query. ACBS does more per node than a plain Dijkstra loop: it
+evaluates the potential at each relaxed neighbour, maintains an efficiency score
+per direction, and decides direction and budget at chunk boundaries. None of
+that appears in a bidirectional Dijkstra inner loop. The numbers say that
+overhead is real and measurable, and that it is still worth paying.
 
 This decomposition also explains why ACBS does poorly on a uniform lattice. On a
 lattice the expansion advantage largely evaporates, so the per-node penalty stays
@@ -331,9 +331,9 @@ queries.
 
 | Query class | n | ACBS median | bidirectional Dijkstra | Speedup | ACBS faster on |
 |---|---:|---:|---:|---:|---:|
-| local | 100 | 0.19 ms | 0.51 ms | 2.72x | 93% |
-| random | 100 | 9.77 ms | 61.60 ms | 6.31x | 100% |
-| regional | 100 | 34.75 ms | 116.77 ms | 3.36x | 100% |
+| local | 100 | 0.19 ms | 0.51 ms | 2.69x | 93% |
+| random | 100 | 9.76 ms | 61.45 ms | 6.30x | 100% |
+| regional | 100 | 34.66 ms | 116.63 ms | 3.36x | 100% |
 
 Local queries gain least because at that scale the fixed cost of setting up the
 search is a large share of the total, and there is little room for a better
@@ -343,6 +343,22 @@ scheduler exploits is less pronounced.
 
 The 93 percent figure on local queries is the honest headline for that class.
 Seven queries out of a hundred do not beat bidirectional Dijkstra at all.
+
+A reader comparing this section with Table 6.1 will notice 6.30x here and 6.04x
+there, for what looks like the same comparison. They are different runs: Table
+6.1 is a 400-query run on this graph, this section is a 300-query rerun, and the
+query samples differ between them even at the same seed. Two honest medians of
+the same algorithm on the same graph can differ by several percent because of
+which queries were drawn, which is exactly why Section 6.3 reports paired
+win counts alongside medians.
+
+A note on the median. The benchmark defines the median as the nearest-rank 50th
+percentile (the lower of the two middle values over 300 queries). An
+interpolated median gives slightly different values, for example 9.77 ms rather
+than 9.76 ms for ACBS. An earlier draft of this section mixed the two conventions
+and also dropped duplicate query pairs, which produced 6.31x and a per-node
+penalty of 43 percent; both figures were wrong in proportion, not in direction.
+The values above are reported in the benchmark's own convention throughout.
 
 ### 6.4 Where the advantage goes away
 
